@@ -40,6 +40,12 @@ from housets_bench.models.gnn.gcn_tcn_geo import GeoGCN_TCN          # noqa: F40
 from housets_bench.models.gnn.graph_wavenet import GraphWaveNet        # noqa: F401
 from housets_bench.models.gnn.stgcn import STGCN                      # noqa: F401
 
+try:
+    from transformers import GPT2Config, GPT2Model
+    _HAS_TRANSFORMERS = True
+except ImportError:
+    _HAS_TRANSFORMERS = False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STSGCN  (Spatial-Temporal Synchronous GCN, AAAI 2020)
@@ -230,6 +236,10 @@ class GNNForecasterBase(BaseForecaster):
         """Run network forward. Default: ``net(x, A_norm)``."""
         return net(x, self._A_norm.to(x.device))
 
+    def _make_optimizer(self, net: nn.Module) -> torch.optim.Optimizer:
+        """Create the optimizer.  Override to filter trainable params for frozen backbones."""
+        return Adam(net.parameters(), lr=float(self.lr), weight_decay=float(self.weight_decay))
+
     # ── checkpoint (override to also persist adjacency) ────────────────────────
 
     def save_checkpoint(self, path: Union[str, Path]) -> None:
@@ -328,7 +338,7 @@ class GNNForecasterBase(BaseForecaster):
         self._graph_dataloaders = graph_dls
 
         net = self._build_net(bundle, n_nodes, A_norm=self._A_norm, device=dev).to(dev)
-        opt = Adam(net.parameters(), lr=float(self.lr), weight_decay=float(self.weight_decay))
+        opt = self._make_optimizer(net)
 
         train_dl = graph_dls["train"]
         val_dl = graph_dls["val"]
@@ -587,3 +597,246 @@ class STSGCNForecaster(GNNForecasterBase):
 
     def _graph_forward(self, net, x):
         return net(x, self._A_st.to(x.device))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ST-LLM+  (Partially Frozen Graph Attention + GPT-2 backbone, 2024)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _SpatialGraphConv(nn.Module):
+    """Single-layer GCN that aggregates node features over the geographic graph.
+
+    Applied independently at each patch-token position so spatial message
+    passing and temporal attention remain on the same time scale.
+    """
+
+    def __init__(self, d_model: int, dropout: float) -> None:
+        super().__init__()
+        self.W = nn.Linear(d_model, d_model, bias=False)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, h: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
+        # h: [B, T_p, N, D]   A: [N, N] dense
+        # h_agg[b,t,n,d] = sum_m A[n,m] * h[b,t,m,d]
+        h_agg = torch.einsum("nm,btmd->btnd", A, h)
+        h_agg = self.drop(self.act(self.W(h_agg)))
+        return self.norm(h + h_agg)   # residual + layer norm
+
+
+class _STLLMPlusNet(nn.Module):
+    """ST-LLM+ network.
+
+    Architecture (per GPT-2 transformer block):
+    1. Temporal: standard GPT-2 self-attention (frozen except LayerNorm weights)
+    2. Spatial:  single-layer GCN over the geographic k-NN graph (fully trained)
+    3. Fusion:   ``h = h_temporal + sigmoid(gate) * h_spatial``
+
+    This is the Partially Frozen Graph Attention (PFGA) mechanism from the
+    ST-LLM+ paper, adapted to use GPT-2 as the backbone (original uses GPT-2
+    as well, making this a faithful re-implementation rather than an approximation).
+
+    Input/output shapes follow :class:`GNNForecasterBase` convention:
+      forward(x, A_norm) → [B, pred_len, N, out_dim]
+    """
+
+    def __init__(
+        self,
+        *,
+        seq_len: int,
+        pred_len: int,
+        input_dim: int,
+        out_dim: int,
+        patch_len: int,
+        stride: int,
+        gpt_layers: int,
+        dropout: float,
+        pretrained: bool,
+    ) -> None:
+        super().__init__()
+        if not _HAS_TRANSFORMERS:
+            raise ImportError(
+                "STLLMPlusForecaster requires the `transformers` package.\n"
+                "Install it with:  pip install transformers"
+            )
+
+        self.seq_len = int(seq_len)
+        self.pred_len = int(pred_len)
+        self.out_dim = int(out_dim)
+        self.patch_len = int(patch_len)
+        self.stride = int(stride)
+
+        patch_num = (int(seq_len) - int(patch_len)) // int(stride) + 1
+        self.patch_num = patch_num
+        D_LLM = 768  # GPT-2 hidden dimension
+
+        # Project flattened patch (patch_len × input_dim) into GPT-2 token space
+        self.in_layer = nn.Linear(int(patch_len) * int(input_dim), D_LLM)
+
+        # GPT-2 backbone
+        if pretrained:
+            self.gpt2 = GPT2Model.from_pretrained("gpt2")
+        else:
+            cfg = GPT2Config(n_embd=D_LLM, n_layer=max(1, int(gpt_layers)), n_head=12)
+            self.gpt2 = GPT2Model(cfg)
+
+        # Use only the first gpt_layers transformer blocks
+        self.gpt2.h = self.gpt2.h[: int(gpt_layers)]
+
+        # Freeze backbone — only LayerNorm weights are adapted (same as GPT4TS)
+        for param in self.gpt2.parameters():
+            param.requires_grad = False
+        for name, param in self.gpt2.named_parameters():
+            if "ln_" in name:
+                param.requires_grad = True
+
+        # PFGA: one spatial GCN + one learnable fusion gate per GPT-2 block
+        n_blocks = int(gpt_layers)
+        self.graph_convs = nn.ModuleList([
+            _SpatialGraphConv(D_LLM, float(dropout)) for _ in range(n_blocks)
+        ])
+        self.fusion_gates = nn.ParameterList([
+            nn.Parameter(torch.zeros(1)) for _ in range(n_blocks)
+        ])
+
+        self.drop = nn.Dropout(float(dropout))
+        # Flatten all patch token hidden states → pred_len × out_dim per node
+        self.out_layer = nn.Linear(D_LLM * patch_num, int(pred_len) * int(out_dim))
+
+    def forward(self, x: torch.Tensor, A_norm: torch.Tensor) -> torch.Tensor:
+        # x:      [B, L, N, Dx]
+        # A_norm: [N, N] sparse or dense (k-NN geographic adjacency)
+        B, L, N, Dx = x.shape
+        if L > self.seq_len:
+            x = x[:, -self.seq_len :, :, :]
+
+        # Per-node instance normalisation (handles inter-ZIP distribution shift)
+        means = x.mean(dim=1, keepdim=True).detach()          # [B, 1, N, Dx]
+        x = x - means
+        std = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x = x / std
+
+        # Materialise dense adjacency for einsum (N is small, ~20–500 nodes)
+        A = A_norm.to(x.device)
+        if A.is_sparse:
+            A = A.to_dense()
+
+        # Flatten nodes into batch axis for patch processing: [B*N, L, Dx]
+        x_bn = x.permute(0, 2, 1, 3).reshape(B * N, L, Dx)
+
+        # Extract patches: [B*N, Np, Dx, patch_len] → flatten → [B*N, Np, Dx*patch_len]
+        xp = x_bn.unfold(1, self.patch_len, self.stride)
+        Np = xp.shape[1]
+        xp = xp.reshape(B * N, Np, Dx * self.patch_len)
+
+        # Embed patches + add GPT-2 positional encoding
+        h = self.in_layer(xp)                                  # [B*N, Np, D_LLM]
+        pos_ids = torch.arange(Np, device=h.device)
+        h = h + self.gpt2.wpe(pos_ids).unsqueeze(0)            # broadcast over B*N
+        h = self.drop(h)
+
+        # ── PFGA: interleave temporal (GPT-2 block) + spatial (graph conv) ──
+        for block, graph_conv, gate in zip(
+            self.gpt2.h, self.graph_convs, self.fusion_gates
+        ):
+            # Temporal attention (frozen weights, trained LayerNorms)
+            h_t = block(h)[0]                                  # [B*N, Np, D_LLM]
+
+            # Spatial: bring N back as a dimension, apply GCN, flatten again
+            #   [B*N, Np, D] → [B, N, Np, D] → [B, Np, N, D] → GCN → [B, Np, N, D]
+            #                → [B, N, Np, D] → [B*N, Np, D]
+            h_4d = h_t.reshape(B, N, Np, -1).permute(0, 2, 1, 3)   # [B, Np, N, D]
+            h_sp = graph_conv(h_4d, A)                               # [B, Np, N, D]
+            h_sp = h_sp.permute(0, 2, 1, 3).reshape(B * N, Np, -1)  # [B*N, Np, D]
+
+            # Gated fusion: gate initialised at 0 so training starts from temporal-only
+            h = h_t + torch.sigmoid(gate) * h_sp
+
+        # ── Output ──────────────────────────────────────────────────────────
+        out = self.out_layer(h.reshape(B * N, -1))             # [B*N, pred_len * out_dim]
+        out = out.view(B, N, self.pred_len, self.out_dim)
+        out = out.permute(0, 2, 1, 3)                          # [B, pred_len, N, out_dim]
+
+        # Denormalise: broadcast [B, 1, N, out_dim] over [B, pred_len, N, out_dim]
+        out = out * std[:, :, :, : self.out_dim] + means[:, :, :, : self.out_dim]
+        return out
+
+
+@register("stllm_plus")
+class STLLMPlusForecaster(GNNForecasterBase):
+    """ST-LLM+: Partially Frozen Graph Attention interleaved with a frozen GPT-2 backbone.
+
+    At each GPT-2 transformer block, a trainable graph convolutional layer
+    aggregates neighbourhood information from the geographic k-NN graph, and
+    the result is fused with the temporal attention output via a learnable gate.
+    Only GPT-2 LayerNorm weights and the spatial GCN layers are trained.
+
+    Reference: KanNan-312/ST-LLM-Plus (2024) — faithful re-implementation using
+    GPT-2 (which the original paper also supports alongside LLaMA variants).
+
+    Requires the ``transformers`` library (``pip install transformers``).
+    GPT-2 weights (~500 MB) are downloaded automatically from HuggingFace.
+    """
+
+    name: str = "stllm_plus"
+
+    # model hparams
+    patch_len: int = 3
+    stride: int = 1
+    gpt_layers: int = 6
+    dropout: float = 0.1
+    pretrained: bool = True
+
+    # training hparams (smaller batch: GPT-2 forward is memory-heavy)
+    epochs: int = 10
+    lr: float = 1e-3
+    weight_decay: float = 0.0
+    grad_clip: float = 1.0
+    patience: int = 3
+    batch_size: int = 4
+    max_train_batches: Optional[int] = None
+    seed: int = 0
+
+    def fit(self, bundle: ProcBundle, *, device: Optional[torch.device] = None) -> None:
+        if not _HAS_TRANSFORMERS:
+            raise ImportError(
+                "STLLMPlusForecaster requires the `transformers` package.\n"
+                "Install it with:  pip install transformers"
+            )
+        super().fit(bundle, device=device)
+
+    def _build_net(
+        self,
+        bundle: ProcBundle,
+        n_nodes: int,
+        *,
+        A_norm: torch.Tensor,
+        device: torch.device,
+    ) -> nn.Module:
+        seq_len = int(bundle.raw.spec.seq_len)
+        patch_len = int(self.patch_len)
+        stride = int(self.stride)
+        if patch_len > seq_len:
+            patch_len = seq_len
+            stride = seq_len
+
+        return _STLLMPlusNet(
+            seq_len=seq_len,
+            pred_len=int(bundle.raw.spec.pred_len),
+            input_dim=int(len(bundle.x_cols)),
+            out_dim=int(len(bundle.y_cols)),
+            patch_len=patch_len,
+            stride=stride,
+            gpt_layers=int(self.gpt_layers),
+            dropout=float(self.dropout),
+            pretrained=bool(self.pretrained),
+        )
+
+    def _graph_forward(self, net: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        return net(x, self._A_norm.to(x.device))
+
+    def _make_optimizer(self, net: nn.Module) -> torch.optim.Optimizer:
+        # Only optimise non-frozen parameters: LayerNorms + graph convs + output head
+        trainable = [p for p in net.parameters() if p.requires_grad]
+        return Adam(trainable, lr=float(self.lr), weight_decay=float(self.weight_decay))
