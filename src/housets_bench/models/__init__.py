@@ -27,6 +27,7 @@ from .gnn.gnn_forecaster import (  # noqa: F401
     GraphWaveNetForecaster,
     STGCNForecaster,
     STSGCNForecaster,
+    STLLMPlusForecaster,
 )
 
 # optional foundation-model wrappers

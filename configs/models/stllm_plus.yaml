@@ -1,0 +1,15 @@
+model:
+  name: stllm_plus
+  hparams:
+    patch_len: 3
+    stride: 1
+    gpt_layers: 6
+    dropout: 0.1
+    pretrained: true
+    epochs: 10
+    lr: 1.0e-3
+    weight_decay: 0.0
+    grad_clip: 1.0
+    patience: 3
+    batch_size: 4
+    seed: 0
