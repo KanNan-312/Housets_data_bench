@@ -34,7 +34,7 @@ def main() -> None:
 
     tasks = sorted(df["task"].dropna().unique().tolist())
     for task in tasks:
-        for metric in ("rmse", "mape"):
+        for metric in ("log_rmse", "rmse", "mape", "mae", "log_mae"):
             piv = pivot_metric(df, task=task, split="test", metric=metric, window_order=DEFAULT_WINDOWS)
             if not piv.empty:
                 piv.to_csv(out_dir / f"pivot_test_{metric}_{task}.csv")

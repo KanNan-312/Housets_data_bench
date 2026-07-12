@@ -98,7 +98,7 @@ def main() -> None:
                 paths = make_run_dir(root=sweep_dir, name=run_name, exist_ok=True)
                 save_yaml(paths.config_path, cfg)
 
-                res = run_one_cfg(cfg=cfg, device=cfg.get("run", {}).get("device", None))
+                res = run_one_cfg(cfg=cfg, device=cfg.get("run", {}).get("device", None), out_dir=run_dir)
                 save_json(paths.metrics_path, res)
                 results.append(res)
 
@@ -110,7 +110,7 @@ def main() -> None:
 
     # pivot tables for quick viewing
     for task in sorted(set(df["task"].dropna().unique().tolist())):
-        for metric in ("rmse", "mape"):
+        for metric in ("log_rmse", "rmse", "mape", "mae", "log_mae"):
             piv = pivot_metric(df, task=task, split="test", metric=metric, window_order=DEFAULT_WINDOWS)
             if not piv.empty:
                 piv.to_csv(sweep_dir / f"pivot_test_{metric}_{task}.csv")

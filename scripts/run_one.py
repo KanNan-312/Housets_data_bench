@@ -74,18 +74,17 @@ def main() -> None:
     # resolve relative paths
     resolve_relpaths(cfg, root=REPO_ROOT)
 
-    # run
-    result = run_one_cfg(cfg=cfg, device=cfg.get("run", {}).get("device", None))
-
-    # name + save
-    model = str(result.get("model"))
-    task = str(result.get("task"))
-    window = str(result.get("window"))
-
-    run_name = args.run_name or f"{model}__{task}__{window}"
+    # pre-compute run dir so checkpoint can be saved during the run
+    _model_name = str((cfg.get("model", {}) or {}).get("name", "unknown"))
+    _task_name = str((cfg.get("task", {}) or {}).get("name", "unknown"))
+    _window_name = str((cfg.get("window", {}) or {}).get("name", "unknown"))
+    run_name = args.run_name or f"{_model_name}__{_task_name}__{_window_name}"
     paths = make_run_dir(root=args.out_root, name=run_name, exist_ok=True)
-
     save_yaml(paths.config_path, cfg)
+
+    # run
+    result = run_one_cfg(cfg=cfg, device=cfg.get("run", {}).get("device", None), out_dir=paths.run_dir)
+
     save_json(paths.metrics_path, result)
     save_json(paths.env_path, collect_env())
 

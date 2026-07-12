@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import asdict
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import time
 import copy
 import json
@@ -21,15 +22,30 @@ from housets_bench.transforms import ClipTransform, LogTransform, PCATransform, 
 
 def _log_dataset_summary(aligned: AlignedData, bundle: ProcBundle) -> None:
     raw = bundle.raw
-    date_start = raw.aligned.dates[0].strftime("%Y-%m") if raw.aligned.dates else "?"
-    date_end = raw.aligned.dates[-1].strftime("%Y-%m") if raw.aligned.dates else "?"
+    split = raw.split
+    dates = raw.aligned.dates
+
+    def _dr(start: int, end: int) -> str:
+        if not dates or end <= start:
+            return "?"
+        s = dates[start].strftime("%Y-%m")
+        e = dates[min(end - 1, len(dates) - 1)].strftime("%Y-%m")
+        return f"{s} → {e}"
+
+    date_start = dates[0].strftime("%Y-%m") if dates else "?"
+    date_end = dates[-1].strftime("%Y-%m") if dates else "?"
     n_train = len(bundle.datasets["train"])
     n_val = len(bundle.datasets["val"])
     n_test = len(bundle.datasets["test"])
+    t_train = split.train[1] - split.train[0]
+    t_val = split.val[1] - split.val[0]
+    t_test = split.test[1] - split.test[0]
     print("=" * 60)
     print("Dataset summary")
     print(f"  ZIPs: {aligned.n_zip}  |  time steps: {aligned.n_time}  ({date_start} → {date_end})  |  features: {aligned.n_features}")
-    print(f"  splits (samples):  train={n_train}  val={n_val}  test={n_test}")
+    print(f"  train: {_dr(*split.train)}  ({t_train} months,  {n_train} samples)")
+    print(f"  val:   {_dr(*split.val)}  ({t_val} months,  {n_val} samples)")
+    print(f"  test:  {_dr(*split.test)}  ({t_test} months,  {n_test} samples)")
     print(f"  window:  seq_len={raw.spec.seq_len}  pred_len={raw.spec.pred_len}  label_len={raw.spec.label_len}")
     print(f"  features_mode={raw.features_mode}  |  x_cols={len(bundle.x_cols)}  y_cols={len(bundle.y_cols)}")
     print(f"  pipeline: {bundle.pipeline.summary()}")
@@ -207,6 +223,7 @@ def run_one_cfg(
     cfg: Dict[str, Any],
     aligned: Optional[AlignedData] = None,
     device: Optional[str] = None,
+    out_dir: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     t0_total = time.perf_counter()
 
@@ -248,8 +265,6 @@ def run_one_cfg(
         if max_eval <= 0:
             max_eval = None
 
-    metric_space = str(run_cfg.get("metric_space", "log")).lower()
-
     # fit / eval
     sync_device(dev)
     t0_fit = time.perf_counter()
@@ -257,15 +272,18 @@ def run_one_cfg(
     sync_device(dev)
     fit_sec = time.perf_counter() - t0_fit
 
+    if out_dir is not None:
+        model.save_checkpoint(Path(out_dir) / "checkpoint.pt")
+
     sync_device(dev)
     t0_val = time.perf_counter()
-    val = evaluate_forecaster(model, bundle, split="val", device=dev, max_batches=max_eval, metric_space=metric_space)
+    val = evaluate_forecaster(model, bundle, split="val", device=dev, max_batches=max_eval)
     sync_device(dev)
     val_eval_sec = time.perf_counter() - t0_val
 
     sync_device(dev)
     t0_test = time.perf_counter()
-    test = evaluate_forecaster(model, bundle, split="test", device=dev, max_batches=max_eval, metric_space=metric_space)
+    test = evaluate_forecaster(model, bundle, split="test", device=dev, max_batches=max_eval)
     sync_device(dev)
     test_eval_sec = time.perf_counter() - t0_test
 
