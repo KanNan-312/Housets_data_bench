@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--window",
         type=str,
-        default="w6_h3",
+        default="w12_h12",
         choices=["w6_h3", "w6_h6", "w6_h12", "w12_h3", "w12_h6", "w12_h12"],
     )
     p.add_argument(

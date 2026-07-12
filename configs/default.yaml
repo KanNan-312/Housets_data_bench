@@ -45,7 +45,7 @@ transforms:
       upper: 0.999
 
   zscore:
-    enabled: false
+    enabled: true
     scope: global
     eps: 1.0e-6
     apply_to:
