@@ -54,9 +54,14 @@ class GraphWindowDataset(Dataset):
         seq_len = bundle.raw.spec.seq_len
         pred_len = bundle.raw.spec.pred_len
 
-        # Strict split: both encoder and forecast window fall within the split
-        t0_start = split_range[0]
+        # For val/test, mirror DL's allow_history=True: the encoder window may
+        # reach back into the prior split, but the prediction must start within
+        # this split.  For train, stay strict (no look-back needed).
         t0_end = split_range[1] - seq_len - pred_len
+        if split == "train":
+            t0_start = split_range[0]
+        else:
+            t0_start = max(0, split_range[0] - seq_len)
         self._time_anchors: List[int] = list(range(t0_start, t0_end + 1))
         self._seq_len = seq_len
         self._pred_len = pred_len

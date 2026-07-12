@@ -43,9 +43,12 @@ def _log_dataset_summary(aligned: AlignedData, bundle: ProcBundle) -> None:
     print("=" * 60)
     print("Dataset summary")
     print(f"  ZIPs: {aligned.n_zip}  |  time steps: {aligned.n_time}  ({date_start} → {date_end})  |  features: {aligned.n_features}")
-    print(f"  train: {_dr(*split.train)}  ({t_train} months,  {n_train} samples)")
-    print(f"  val:   {_dr(*split.val)}  ({t_val} months,  {n_val} samples)")
-    print(f"  test:  {_dr(*split.test)}  ({t_test} months,  {n_test} samples)")
+    def _warn(n: int, name: str) -> str:
+        return "  *** EMPTY — no valid windows ***" if n == 0 else ""
+
+    print(f"  train: {_dr(*split.train)}  ({t_train} months,  {n_train} samples){_warn(n_train, 'train')}")
+    print(f"  val:   {_dr(*split.val)}  ({t_val} months,  {n_val} samples){_warn(n_val, 'val')}")
+    print(f"  test:  {_dr(*split.test)}  ({t_test} months,  {n_test} samples){_warn(n_test, 'test')}")
     print(f"  window:  seq_len={raw.spec.seq_len}  pred_len={raw.spec.pred_len}  label_len={raw.spec.label_len}")
     print(f"  features_mode={raw.features_mode}  |  x_cols={len(bundle.x_cols)}  y_cols={len(bundle.y_cols)}")
     print(f"  pipeline: {bundle.pipeline.summary()}")
