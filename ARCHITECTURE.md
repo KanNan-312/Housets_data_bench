@@ -233,21 +233,21 @@ def fit(self, bundle, *, device):
 Called twice after training: once for `"val"`, once for `"test"`.
 
 ```python
-evaluate_forecaster(model, bundle, split="test", device, max_batches, metric_space="log")
-  → EvalResult(rmse, mape, n_points, metric_space)
+evaluate_forecaster(model, bundle, split="test", device, max_batches)
+  → EvalResult(log_rmse, rmse, mape, mae, log_mae, n_points)
 ```
 
 Internally uses `StreamingEvaluator` which:
 
 1. Calls `model.predict_batch(batch, bundle, device)` → `y_pred [B, H, Dy]` (processed space)
 2. Embeds predictions into the full feature dimension
-3. Always calls `pipeline.inverse(…, keep_log=False)` → fully inverted **raw price** values (pipeline-agnostic, fair for any model regardless of internal transforms)
-4. For RMSE, the space depends on `metric_space`:
-   - `"log"` (default): `RMSE(log1p(p_raw), log1p(t_raw))` — **log-RMSE on raw prices** (scale-normalised, comparable across models including LLMs predicting on original scale)
-   - `"original"`: `RMSE(p_raw, t_raw)` — **RMSE in raw dollar space**
-5. MAPE always uses `p_raw` and `t_raw` directly
-
-Set via config: `run.metric_space: original`, or CLI: `--set run.metric_space=original`.
+3. Calls `pipeline.inverse(…, keep_log=False)` → fully inverted **raw price** values (pipeline-agnostic; correct for any model regardless of internal transforms)
+4. Computes all five metrics on those raw prices in a single pass:
+   - `log_rmse` — `RMSE(log1p(p_raw), log1p(t_raw))`
+   - `rmse`     — `RMSE(p_raw, t_raw)` in dollar space
+   - `mape`     — `mean |p_raw − t_raw| / |t_raw|`
+   - `mae`      — `mean |p_raw − t_raw|`
+   - `log_mae`  — `MAE(log1p(p_raw), log1p(t_raw))`
 
 A second pass via `evaluate_mse_loss` computes **processed-space MSE** (no inverse transform) for all three splits; this is what the DL training loop minimises.
 
@@ -296,4 +296,4 @@ run_one_cfg(cfg, device)
 | `WindowSpec` | `data/windowing.py` | `seq_len`, `label_len`, `pred_len` |
 | `RawBundle` | `bundles/datatypes.py` | `AlignedData + TimeSplit + WindowSpec + features_mode` |
 | `ProcBundle` | `bundles/datatypes.py` | Everything a model needs: processed data, dataloaders, pipeline |
-| `EvalResult` | `metrics/evaluator.py` | `rmse`, `mape`, `n_points`, `metric_space` |
+| `EvalResult` | `metrics/evaluator.py` | `log_rmse`, `rmse`, `mape`, `mae`, `log_mae`, `n_points` |
