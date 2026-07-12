@@ -100,10 +100,13 @@ def main() -> None:
     model = get_model(model_name)
     apply_hparams(model, model_cfg.get("hparams", {}) or {})
 
-    # load checkpoint (required for DL models; no-op for non-DL)
+    # load checkpoint (required for DL/GNN models; no-op for non-DL)
     if checkpoint_path.exists():
         print(f"Loading checkpoint: {checkpoint_path}")
         model.load_checkpoint(checkpoint_path, device=dev)
+        # GNN models need graph dataloaders rebuilt from bundle after checkpoint load
+        if hasattr(model, "setup_graph_dataloaders"):
+            model.setup_graph_dataloaders(bundle)
     else:
         print(f"[warn] No checkpoint.pt found in {run_dir}. Evaluating without loading weights.")
 

@@ -131,7 +131,11 @@ def evaluate_forecaster(
     if split not in ("train", "val", "test"):
         raise ValueError("split must be one of: train/val/test")
 
-    dl = bundle.dataloaders[split]
+    # GNN models store their own graph-structured dataloaders; fall back to
+    # the standard per-ZIP dataloader for all other model families.
+    _graph_dls = getattr(model, "_graph_dataloaders", None)
+    dl = _graph_dls[split] if (_graph_dls and split in _graph_dls) else bundle.dataloaders[split]
+
     evaluator = StreamingEvaluator(bundle)
 
     pred_len = int(bundle.raw.spec.pred_len)

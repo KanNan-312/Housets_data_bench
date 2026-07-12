@@ -1,0 +1,23 @@
+model:
+  name: graph_wavenet
+  hparams:
+    residual_channels: 32
+    dilation_channels: 32
+    skip_channels: 64
+    end_channels: 128
+    kernel_size: 2
+    n_blocks: 2
+    n_layers: 2
+    gcn_order: 2
+    dropout: 0.1
+    adaptive_adj: true
+    adaptive_emb_dim: 8
+    epochs: 30
+    lr: 5.0e-4
+    weight_decay: 1.0e-4
+    patience: 7
+    batch_size: 8
+    lat_col: latitude
+    lon_col: longitude
+    graph_k: 10
+    graph_max_km: 100.0

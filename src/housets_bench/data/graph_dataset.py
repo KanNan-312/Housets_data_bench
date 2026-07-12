@@ -1,97 +1,96 @@
+"""Graph-structured windowed dataset for spatiotemporal GNN models.
+
+Key difference from WindowDataset
+----------------------------------
+``WindowDataset`` (used by DL models) generates one sample per *(ZIP, t₀)* pair.
+A batch has shape ``[B, L, Dx]``; each row is one ZIP × one time window, so ZIPs
+are treated as **independent** samples with no spatial coupling.
+
+``GraphWindowDataset`` (used by GNN models) generates one sample per *t₀* only
+— ALL N ZIP nodes are included in every item.  A batch has shape
+``[B, L, N, Dx]``; the model then performs message-passing across N, capturing
+geographic dependencies.  After the GNN forward pass the prediction is reshaped
+from ``[B, H, N, Dy]`` → ``[B*N, H, Dy]`` so the standard
+:class:`~housets_bench.metrics.evaluator.StreamingEvaluator` receives the same
+``(n_samples, horizon, features)`` format it expects.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Tuple
+from typing import List
 
-import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-
-@dataclass(frozen=True)
-class TimeRange:
-    start: int
-    end: int
+from housets_bench.bundles.datatypes import ProcBundle
 
 
 class GraphWindowDataset(Dataset):
+    """Full-graph time-windowed dataset for GNN-based forecasters.
 
-    def __init__(
-        self,
-        x_values: np.ndarray,
-        y_values: np.ndarray,
-        split: Tuple[int, int],
-        spec,
-        allow_history: bool,
-    ) -> None:
-        assert x_values.ndim == 3, f"x_values must be [N,T,F], got {x_values.shape}"
-        assert y_values.ndim == 3 and y_values.shape[-1] == 1, f"y_values must be [N,T,1], got {y_values.shape}"
-        self.x = x_values
-        self.y = y_values
-        self.N, self.T, self.F = x_values.shape
-        self.seq_len = int(spec.seq_len)
-        self.pred_len = int(spec.pred_len)
-        self.split = (int(split[0]), int(split[1]))
-        self.allow_history = bool(allow_history)
+    Each item covers **all N nodes** for a single time window::
 
-        self._t0_list = self._make_t0_list()
+        "x": [L, N, Dx]       — encoder input  (all ZIPs, seq_len steps)
+        "y": [pred_len, N, Dy] — forecast target (all ZIPs, pred_len steps)
 
-    def _make_t0_list(self):
-        start, end = self.split
-        L, H = self.seq_len, self.pred_len
+    After :func:`graph_collate`, a batch has::
 
-        t0_list = []
-        t_pred_min = start
-        t_pred_max = end - H 
-
-        if t_pred_max < t_pred_min:
-            return []
-        if self.allow_history:
-            t_pred_min = max(t_pred_min, L)
-        else:
-            t_pred_min = max(t_pred_min, start + L)
-            t_pred_min = max(t_pred_min, L)
-
-        for t_pred in range(t_pred_min, t_pred_max + 1):
-            t0 = t_pred - L
-            if t0 < 0:
-                continue
-            # encoder end t0+L == t_pred
-            # horizon: [t_pred, t_pred+H)
-            if t_pred + H > self.T:
-                continue
-            t0_list.append(t0)
-
-        return t0_list
-
-    def __len__(self) -> int:
-        return len(self._t0_list)
-
-    def __getitem__(self, idx: int):
-        t0 = self._t0_list[idx]
-        L, H = self.seq_len, self.pred_len
-
-        x_win = self.x[:, t0 : t0 + L, :]            # [N,L,F]
-        y_win = self.y[:, t0 + L : t0 + L + H, :]    # [N,H,1]
-
-        # Return as torch tensors with layout [L,N,F] and [H,N,1]
-        x_t = torch.from_numpy(np.ascontiguousarray(x_win.transpose(1, 0, 2))).float()
-        y_t = torch.from_numpy(np.ascontiguousarray(y_win.transpose(1, 0, 2))).float()
-
-        meta = {"t0": int(t0), "t_pred_start": int(t0 + L)}
-        return {"x": x_t, "y": y_t, "meta": meta}
-
-
-class GraphWindowCollate:
-    """Collate: stack dicts into a batch.
-
-    x: [B,L,N,F]
-    y: [B,H,N,1]
-    meta: list[dict]
+        "x": [B, L, N, Dx]
+        "y": [B*N, pred_len, Dy]  — flattened for StreamingEvaluator
     """
 
-    def __call__(self, batch):
-        xs = torch.stack([b["x"] for b in batch], dim=0)
-        ys = torch.stack([b["y"] for b in batch], dim=0)
-        meta = [b["meta"] for b in batch]
-        return {"x": xs, "y": ys, "meta": meta}
+    def __init__(self, bundle: ProcBundle, split: str) -> None:
+        super().__init__()
+        split = split.lower()
+
+        values = bundle.aligned_proc.values  # [N, T, D]
+        proc_names = list(bundle.aligned_proc.schema.continuous_cols)
+        name_to_idx = {n: i for i, n in enumerate(proc_names)}
+
+        self._x_idx = [name_to_idx[c] for c in bundle.x_cols]
+        self._y_idx = [name_to_idx[c] for c in bundle.y_cols]
+        self._values = torch.tensor(values, dtype=torch.float32)  # [N, T, D]
+
+        split_range = bundle.raw.split.range(split)
+        seq_len = bundle.raw.spec.seq_len
+        pred_len = bundle.raw.spec.pred_len
+
+        # Strict split: both encoder and forecast window fall within the split
+        t0_start = split_range[0]
+        t0_end = split_range[1] - seq_len - pred_len
+        self._time_anchors: List[int] = list(range(t0_start, t0_end + 1))
+        self._seq_len = seq_len
+        self._pred_len = pred_len
+
+    def __len__(self) -> int:
+        return len(self._time_anchors)
+
+    def __getitem__(self, idx: int):
+        t = self._time_anchors[idx]
+        L, H = self._seq_len, self._pred_len
+
+        # [N, L, Dx] → [L, N, Dx]
+        x = self._values[:, t : t + L, :][:, :, self._x_idx].permute(1, 0, 2)
+        # [N, H, Dy] → [H, N, Dy]
+        y = self._values[:, t + L : t + L + H, :][:, :, self._y_idx].permute(1, 0, 2)
+
+        return {"x": x, "y": y}
+
+
+def graph_collate(batch):
+    """Stack a list of graph items into a batch, flattening nodes into batch axis.
+
+    Input items have::
+
+        "x": [L, N, Dx]       per item
+        "y": [pred_len, N, Dy] per item
+
+    Output batch::
+
+        "x": [B, L, N, Dx]
+        "y": [B*N, pred_len, Dy]  — node axis merged into batch for evaluator
+    """
+    x = torch.stack([b["x"] for b in batch])  # [B, L, N, Dx]
+    y = torch.stack([b["y"] for b in batch])   # [B, H, N, Dy]
+    B, H, N, Dy = y.shape
+    y_flat = y.permute(0, 2, 1, 3).reshape(B * N, H, Dy)  # [B*N, H, Dy]
+    return {"x": x, "y": y_flat}

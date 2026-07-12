@@ -1,0 +1,16 @@
+model:
+  name: stsgcn
+  hparams:
+    hidden_dim: 32
+    T_local: 3
+    n_layers: 2
+    dropout: 0.1
+    epochs: 30
+    lr: 5.0e-4
+    weight_decay: 1.0e-4
+    patience: 7
+    batch_size: 8
+    lat_col: latitude
+    lon_col: longitude
+    graph_k: 10
+    graph_max_km: 100.0
