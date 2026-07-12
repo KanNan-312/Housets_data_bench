@@ -1,14 +1,12 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional
 
-import os
 import time
-
 import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from housets_bench.bundles.datatypes import ProcBundle
 from housets_bench.models.base import BaseForecaster
@@ -334,16 +332,20 @@ class AutoformerForecaster(BaseForecaster):
         best_state: Optional[Dict[str, torch.Tensor]] = None
         bad_epochs = 0
 
-        log_epoch = str(os.environ.get("HOUSETS_LOG_EPOCH", "0")).strip().lower() not in ("", "0", "false", "no")
         self.train_history = []
+        _max_bt = int(self.max_train_batches) if self.max_train_batches is not None else None
+        _train_total = min(len(train_dl), _max_bt) if _max_bt is not None else len(train_dl)
 
-        for ep in range(int(self.epochs)):
+        epoch_bar = tqdm(range(int(self.epochs)), desc=f"[{self.name}]", unit="ep")
+        for ep in epoch_bar:
             t_ep0 = time.perf_counter()
             net.train()
             train_sse = 0.0
             train_n = 0
-            for bi, batch in enumerate(train_dl):
+            train_bar = tqdm(train_dl, desc="  train", total=_train_total, leave=False, unit="bt")
+            for bi, batch in enumerate(train_bar):
                 if self.max_train_batches is not None and bi >= int(self.max_train_batches):
+                    train_bar.close()
                     break
 
                 x = batch["x"].to(dev)
@@ -370,13 +372,15 @@ class AutoformerForecaster(BaseForecaster):
 
                 train_sse += float(loss.detach().item()) * int(y_true.numel())
                 train_n += int(y_true.numel())
+                train_bar.set_postfix({"loss": f"{float(loss.detach().item()):.4g}"})
 
             # validation MSE (processed space)
             net.eval()
             sse = 0.0
             n = 0
             with torch.no_grad():
-                for batch in val_dl:
+                val_bar = tqdm(val_dl, desc="  val  ", leave=False, unit="bt")
+                for batch in val_bar:
                     x = batch["x"].to(dev)
                     x_mark = batch.get("x_mark", None)
                     if x_mark is not None:
@@ -394,6 +398,7 @@ class AutoformerForecaster(BaseForecaster):
                     diff = (y_pred - y_true).float()
                     sse += float((diff * diff).sum().item())
                     n += int(diff.numel())
+                    val_bar.set_postfix({"mse": f"{sse / max(n, 1):.4g}"})
 
             val_mse = sse / max(n, 1)
 
@@ -406,12 +411,6 @@ class AutoformerForecaster(BaseForecaster):
                 "epoch_time_sec": float(ep_time),
             }
             self.train_history.append(rec)
-            if log_epoch:
-                print(
-                    f"[autoformer] epoch {ep+1}/{int(self.epochs)} "
-                    f"train_mse={train_mse:.6g} val_mse={val_mse:.6g} "
-                    f"epoch_time={ep_time:.2f}s"
-                )
 
             if val_mse < best_val - 1e-12:
                 best_val = val_mse
@@ -420,7 +419,9 @@ class AutoformerForecaster(BaseForecaster):
             else:
                 bad_epochs += 1
                 if bad_epochs >= int(self.patience):
+                    epoch_bar.close()
                     break
+            epoch_bar.set_postfix({"train": f"{train_mse:.4g}", "val": f"{val_mse:.4g}", "best": f"{best_val:.4g}"})
 
         if best_state is not None:
             net.load_state_dict(best_state)

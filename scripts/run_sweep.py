@@ -110,7 +110,7 @@ def main() -> None:
 
     # pivot tables for quick viewing
     for task in sorted(set(df["task"].dropna().unique().tolist())):
-        for metric in ("logrmse", "mape"):
+        for metric in ("rmse", "mape"):
             piv = pivot_metric(df, task=task, split="test", metric=metric, window_order=DEFAULT_WINDOWS)
             if not piv.empty:
                 piv.to_csv(sweep_dir / f"pivot_test_{metric}_{task}.csv")

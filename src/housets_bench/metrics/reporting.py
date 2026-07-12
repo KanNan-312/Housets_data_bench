@@ -37,7 +37,7 @@ def collect_runs(run_root: str | Path) -> pd.DataFrame:
             s = m[split] or {}
             row = dict(row_base)
             row["split"] = split
-            row["logrmse"] = s.get("logrmse")
+            row["rmse"] = s.get("rmse")
             row["mape"] = s.get("mape")
             row["n_points"] = s.get("n_points")
             rows.append(row)

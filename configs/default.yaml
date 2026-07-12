@@ -61,4 +61,5 @@ model:
 
 run:
   device: cuda
-  max_eval_batches: 0 
+  max_eval_batches: 0
+  metric_space: log    # "log" (RMSE in log-price space) or "original" (RMSE in raw price space)

@@ -22,6 +22,7 @@ def run_one(
     bundle: ProcBundle,
     device: Optional[str] = None,
     max_eval_batches: Optional[int] = None,
+    metric_space: str = "log",
 ) -> Dict[str, object]:
     dev = torch.device(device) if device is not None else None
 
@@ -39,13 +40,13 @@ def run_one(
     # ---- eval timing ----
     sync_device(dev)
     t0_val = time.perf_counter()
-    val = evaluate_forecaster(model, bundle, split="val", device=dev, max_batches=max_eval_batches)
+    val = evaluate_forecaster(model, bundle, split="val", device=dev, max_batches=max_eval_batches, metric_space=metric_space)
     sync_device(dev)
     val_eval_sec = time.perf_counter() - t0_val
 
     sync_device(dev)
     t0_test = time.perf_counter()
-    test = evaluate_forecaster(model, bundle, split="test", device=dev, max_batches=max_eval_batches)
+    test = evaluate_forecaster(model, bundle, split="test", device=dev, max_batches=max_eval_batches, metric_space=metric_space)
     sync_device(dev)
     test_eval_sec = time.perf_counter() - t0_test
 

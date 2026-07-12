@@ -6,7 +6,7 @@ import copy
 import json
 import numpy as np
 import torch
-import housets_bench.models  
+import housets_bench.models
 
 from housets_bench.bundles import build_proc_bundle
 from housets_bench.bundles.datatypes import ProcBundle
@@ -17,6 +17,23 @@ from housets_bench.metrics.evaluator import evaluate_forecaster
 from housets_bench.metrics.loss import evaluate_mse_loss, extract_train_history, sync_device
 from housets_bench.models.registry import get as get_model
 from housets_bench.transforms import ClipTransform, LogTransform, PCATransform, StageSpec, TransformPipeline, ZScoreTransform
+
+
+def _log_dataset_summary(aligned: AlignedData, bundle: ProcBundle) -> None:
+    raw = bundle.raw
+    date_start = raw.aligned.dates[0].strftime("%Y-%m") if raw.aligned.dates else "?"
+    date_end = raw.aligned.dates[-1].strftime("%Y-%m") if raw.aligned.dates else "?"
+    n_train = len(bundle.datasets["train"])
+    n_val = len(bundle.datasets["val"])
+    n_test = len(bundle.datasets["test"])
+    print("=" * 60)
+    print("Dataset summary")
+    print(f"  ZIPs: {aligned.n_zip}  |  time steps: {aligned.n_time}  ({date_start} → {date_end})  |  features: {aligned.n_features}")
+    print(f"  splits (samples):  train={n_train}  val={n_val}  test={n_test}")
+    print(f"  window:  seq_len={raw.spec.seq_len}  pred_len={raw.spec.pred_len}  label_len={raw.spec.label_len}")
+    print(f"  features_mode={raw.features_mode}  |  x_cols={len(bundle.x_cols)}  y_cols={len(bundle.y_cols)}")
+    print(f"  pipeline: {bundle.pipeline.summary()}")
+    print("=" * 60)
 
 
 def _maybe_set(obj: object, name: str, value: Any) -> None:
@@ -212,6 +229,7 @@ def run_one_cfg(
                 schema=aligned.schema,
             )
     bundle = build_bundle_from_cfg(aligned=aligned, cfg=cfg)
+    _log_dataset_summary(aligned, bundle)
 
     model_cfg = cfg.get("model", {}) or {}
     model_name = str(model_cfg.get("name"))
@@ -230,6 +248,8 @@ def run_one_cfg(
         if max_eval <= 0:
             max_eval = None
 
+    metric_space = str(run_cfg.get("metric_space", "log")).lower()
+
     # fit / eval
     sync_device(dev)
     t0_fit = time.perf_counter()
@@ -239,13 +259,13 @@ def run_one_cfg(
 
     sync_device(dev)
     t0_val = time.perf_counter()
-    val = evaluate_forecaster(model, bundle, split="val", device=dev, max_batches=max_eval)
+    val = evaluate_forecaster(model, bundle, split="val", device=dev, max_batches=max_eval, metric_space=metric_space)
     sync_device(dev)
     val_eval_sec = time.perf_counter() - t0_val
 
     sync_device(dev)
     t0_test = time.perf_counter()
-    test = evaluate_forecaster(model, bundle, split="test", device=dev, max_batches=max_eval)
+    test = evaluate_forecaster(model, bundle, split="test", device=dev, max_batches=max_eval, metric_space=metric_space)
     sync_device(dev)
     test_eval_sec = time.perf_counter() - t0_test
 
