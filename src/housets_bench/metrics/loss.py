@@ -63,7 +63,8 @@ def evaluate_mse_loss(
     if not hasattr(bundle, "dataloaders") or split not in bundle.dataloaders:
         raise KeyError(f"bundle.dataloaders missing split={split!r}")
 
-    dl = bundle.dataloaders[split]
+    _graph_dls = getattr(model, "_graph_dataloaders", None)
+    dl = _graph_dls[split] if (_graph_dls and split in _graph_dls) else bundle.dataloaders[split]
     pred_len = _get_pred_len(bundle)
 
     sse = 0.0
