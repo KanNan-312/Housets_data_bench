@@ -18,6 +18,14 @@ from .dl.informer import InformerForecaster
 from .dl.autoformer import AutoformerForecaster  
 from .dl.fedformer import FEDformerForecaster 
 
+# graph neural network baselines
+from .gnn.gnn_forecaster import (  # noqa: F401
+    GCNTCNForecaster,
+    GraphWaveNetForecaster,
+    STGCNForecaster,
+    STSGCNForecaster,
+)
+
 # optional foundation-model wrappers
 from .foundation.timesfm import TimesFMZeroForecaster, TimesFMCalibratedForecaster, TimesFMFullFineTuneForecaster  
 from .foundation.chronos import ChronosZeroForecaster, ChronosCalibratedForecaster, ChronosFullFineTuneForecaster 

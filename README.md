@@ -126,12 +126,79 @@ The current `configs/models/` directory includes the following model configs.
 - `autoformer`
 - `fedformer`
 
+### Graph neural networks
+
+- `gcn_tcn`
+- `graph_wavenet`
+- `stgcn`
+- `stsgcn`
+
 ### Foundation-model variants
 
 - `chronos2_zero`
 - `chronos2_ft`
 - `timesfm_xreg_zero`
 - `timesfm_xreg_ft`
+
+---
+
+---
+
+## GNN models: dataloader structure
+
+GNN models (GCN-TCN, STGCN, GraphWaveNet, STSGCN) require a geographic
+lat/lon file to build the k-NN graph adjacency.  The expected path is:
+
+```
+data/raw/zip_latlon.csv   # columns: zipcode, lat, lon
+```
+
+Override the path per model via `--set model.hparams.latlon_path=<path>`.
+
+### Why GNN dataloaders are different
+
+| | DL models | GNN models |
+|---|---|---|
+| **Unit of one sample** | one ZIP × one time window | one time window × **all N ZIPs** |
+| **Batch shape** | `[B, L, Dx]` — B mixes ZIPs and time positions | `[B, L, N, Dx]` — B is time positions only, N always equals total ZIPs |
+| **Spatial coupling** | None — each ZIP is processed independently | Full — message-passing across N geographic neighbors per step |
+| **Batch size meaning** | number of (ZIP, window) pairs | number of time windows (all N nodes included in each) |
+
+**DL dataloader** (`WindowDataset`): generates one `(zip_i, t₀)` anchor per item.
+The DataLoader collects B such anchors into a tensor `[B, L, Dx]`.
+Spatial information across ZIPs is entirely absent; each row is independent.
+
+**GNN dataloader** (`GraphWindowDataset`): generates one `t₀` anchor per item —
+but returns the feature matrix for **all N nodes at that time step**.
+The batch tensor `[B, L, N, Dx]` lets the network perform graph message-passing
+across the N-dimension, so every ZIP can receive information from its
+geographic neighbors.
+
+After the GNN forward pass the output `[B, H, N, Dy]` is reshaped to
+`[B×N, H, Dy]` so the standard `StreamingEvaluator` receives the same
+`(n_samples, horizon, features)` format it expects from DL models.
+
+### STSGCN
+
+STSGCN (Wu et al., AAAI 2020, [code](https://github.com/Davidham3/STSGCN))
+differs from STGCN in that it captures spatial and temporal dependencies
+**synchronously** in a single graph operation rather than in separate sequential
+stages.
+
+It constructs a spatial-temporal synchronous adjacency
+`A_st ∈ R^{T_local·N × T_local·N}` by stacking `T_local` copies of the spatial
+graph on the diagonal and adding identity connections between consecutive steps:
+
+```
+A_st = [ A_s  I    0  ]
+       [ I    A_s  I  ]   (T_local = 3)
+       [ 0    I    A_s]
+```
+
+A GCN applied to the flattened `T_local·N`-node graph then aggregates across
+both the spatial and temporal axes in one pass.  Each prediction step has its
+own independent STSGCM branch, extracting the representation at the centre
+time step.
 
 ---
 

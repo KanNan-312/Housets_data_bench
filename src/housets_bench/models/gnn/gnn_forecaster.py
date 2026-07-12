@@ -1,0 +1,589 @@
+"""Unified GNN forecaster: GCN-TCN, GraphWaveNet, STGCN, STSGCN.
+
+All four models share an identical training loop (tqdm bars, early stopping,
+checkpoint save/load).  The only thing that differs per model is:
+  1. How the PyTorch network is constructed  (_build_net)
+  2. How the forward pass is called          (_graph_forward)
+
+Dataloader note
+---------------
+GNN models use :class:`~housets_bench.data.graph_dataset.GraphWindowDataset`
+which produces batches of shape ``[B, L, N, Dx]`` (all N nodes per item) rather
+than the ``[B, L, Dx]`` batches produced by the standard DL dataloader where
+each item is a single ZIP-code time window.  See
+``src/housets_bench/data/graph_dataset.py`` for the full explanation.
+"""
+from __future__ import annotations
+
+import math
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from housets_bench.bundles.datatypes import ProcBundle
+from housets_bench.data.graph_dataset import GraphWindowDataset, graph_collate
+from housets_bench.graph.geo_knn import build_knn_geo_graph
+from housets_bench.graph.torch_adj import normalize_adj_sym, sparse_adj
+from housets_bench.models.base import BaseForecaster
+from housets_bench.models.registry import register
+
+# Re-export the three existing PyTorch network modules so this file is the
+# single GNN entry point — nothing outside this package needs to import them.
+from housets_bench.models.gnn.gcn_tcn_geo import GeoGCN_TCN          # noqa: F401
+from housets_bench.models.gnn.graph_wavenet import GraphWaveNet        # noqa: F401
+from housets_bench.models.gnn.stgcn import STGCN                      # noqa: F401
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STSGCN  (Spatial-Temporal Synchronous GCN, AAAI 2020)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_st_adj(A_s_dense: torch.Tensor, T_local: int) -> torch.Tensor:
+    """Construct the dense [T_local*N, T_local*N] spatial-temporal adjacency.
+
+    Block structure::
+
+        A_st = [ A_s  I    0  ]
+               [ I    A_s  I  ]   (for T_local = 3)
+               [ 0    I    A_s]
+
+    Diagonal blocks carry spatial edges; off-diagonal identity blocks carry
+    temporal connections between consecutive time steps.  Rows are normalised.
+    """
+    N = A_s_dense.shape[0]
+    dev = A_s_dense.device
+    TN = T_local * N
+
+    A_st = torch.zeros(TN, TN, dtype=torch.float32, device=dev)
+
+    for t in range(T_local):
+        A_st[t * N : (t + 1) * N, t * N : (t + 1) * N] = A_s_dense
+
+    I = torch.eye(N, dtype=torch.float32, device=dev)
+    for t in range(T_local - 1):
+        A_st[t * N : (t + 1) * N, (t + 1) * N : (t + 2) * N] = I
+        A_st[(t + 1) * N : (t + 2) * N, t * N : (t + 1) * N] = I
+
+    deg = A_st.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    return A_st / deg
+
+
+class _STSGCMBlock(nn.Module):
+    """One Spatial-Temporal Synchronous Graph Convolutional Module.
+
+    Applies two hops of GCN on the expanded spatial-temporal adjacency
+    ``A_st ∈ R^{T_local·N × T_local·N}``, then returns the representation at
+    the CENTRE time step: ``R^{B, N, C_out}``.
+    """
+
+    def __init__(self, c_in: int, c_out: int, T_local: int = 3, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.T_local = int(T_local)
+        self.fc1 = nn.Linear(c_in, c_out)
+        self.fc2 = nn.Linear(c_out, c_out)
+        self.drop = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(c_out)
+
+    def forward(self, x_local: torch.Tensor, A_st: torch.Tensor) -> torch.Tensor:
+        # x_local: [B, T_local, N, C]
+        B, T, N, C = x_local.shape
+        TN = T * N
+        h = x_local.reshape(B, TN, C)  # [B, TN, C]
+
+        # Two-hop GCN on A_st
+        h = torch.einsum("ij,bjc->bic", A_st, h)
+        h = F.relu(self.fc1(h))
+        h = torch.einsum("ij,bjc->bic", A_st, h)
+        h = F.relu(self.fc2(h))
+        h = self.drop(h)
+
+        # Extract centre time step
+        mid = (self.T_local // 2) * N
+        return self.norm(h[:, mid : mid + N, :])  # [B, N, C_out]
+
+
+class STSGCNet(nn.Module):
+    """STSGCN network (AAAI 2020).
+
+    For multi-step forecasting each output step gets its own STSGCM stack that
+    processes the last ``T_local`` encoder steps and emits one prediction.
+
+    Args:
+        input_dim:  number of input features (Dx)
+        hidden_dim: hidden channel width
+        pred_len:   forecasting horizon H
+        n_nodes:    number of graph nodes N
+        T_local:    local temporal window size for the synchronous graph
+        n_layers:   number of STSGCM layers per prediction branch
+        dropout:    dropout rate
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        pred_len: int,
+        n_nodes: int,
+        *,
+        T_local: int = 3,
+        n_layers: int = 2,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.pred_len = int(pred_len)
+        self.T_local = int(T_local)
+
+        self.in_proj = nn.Linear(int(input_dim), int(hidden_dim))
+
+        # Independent prediction branch per output step
+        self.stsgcm_stacks = nn.ModuleList([
+            nn.ModuleList([
+                _STSGCMBlock(int(hidden_dim), int(hidden_dim), T_local=T_local, dropout=dropout)
+                for _ in range(int(n_layers))
+            ])
+            for _ in range(int(pred_len))
+        ])
+        self.out_heads = nn.ModuleList([
+            nn.Linear(int(hidden_dim), 1) for _ in range(int(pred_len))
+        ])
+
+    def forward(self, x: torch.Tensor, A_st: torch.Tensor) -> torch.Tensor:
+        # x:    [B, L, N, F]
+        # A_st: [T_local*N, T_local*N] dense
+        B, L, N, _ = x.shape
+        h = self.in_proj(x)  # [B, L, N, H]
+
+        # Crop / pad to last T_local steps
+        T = self.T_local
+        if L >= T:
+            h_local = h[:, -T:, :, :]          # [B, T_local, N, H]
+        else:
+            h_local = F.pad(h, (0, 0, 0, 0, T - L, 0))
+
+        outs: List[torch.Tensor] = []
+        for step_i in range(self.pred_len):
+            h_i = h_local
+            for block in self.stsgcm_stacks[step_i]:
+                h_out = block(h_i, A_st)                       # [B, N, H]
+                h_i = h_out.unsqueeze(1).expand(-1, T, -1, -1) # re-wrap for next layer
+            outs.append(self.out_heads[step_i](h_out))         # [B, N, 1]
+
+        return torch.stack(outs, dim=1)  # [B, pred_len, N, 1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared training base
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GNNForecasterBase(BaseForecaster):
+    """Common training / evaluation loop for all GNN forecasters.
+
+    Subclasses implement :meth:`_build_net` to return the PyTorch network, and
+    optionally override :meth:`_graph_forward` when the network signature
+    differs (e.g. GraphWaveNet expects a *list* of supports).
+    """
+
+    # ── training hparams ──────────────────────────────────────────────────────
+    epochs: int = 30
+    lr: float = 1e-3
+    weight_decay: float = 0.0
+    grad_clip: float = 1.0
+    patience: int = 5
+    batch_size: int = 8          # time windows per batch (not ZIP windows)
+    max_train_batches: Optional[int] = None
+    seed: int = 0
+
+    # ── graph hparams ─────────────────────────────────────────────────────────
+    lat_col: str = "latitude"
+    lon_col: str = "longitude"
+    graph_k: int = 10
+    graph_max_km: float = 100.0
+
+    def __init__(self) -> None:
+        self._net: Optional[nn.Module] = None
+        self._A_norm: Optional[torch.Tensor] = None   # sparse adj, CPU
+        self._n_nodes: Optional[int] = None
+        self._pred_len: Optional[int] = None
+        self._graph_dataloaders: Optional[Dict[str, DataLoader]] = None
+        self.train_history: List[Dict[str, Any]] = []
+
+    # ── subclass hooks ────────────────────────────────────────────────────────
+
+    def _build_net(
+        self,
+        bundle: ProcBundle,
+        n_nodes: int,
+        *,
+        A_norm: torch.Tensor,
+        device: torch.device,
+    ) -> nn.Module:
+        raise NotImplementedError
+
+    def _graph_forward(self, net: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """Run network forward. Default: ``net(x, A_norm)``."""
+        return net(x, self._A_norm.to(x.device))
+
+    # ── checkpoint (override to also persist adjacency) ────────────────────────
+
+    def save_checkpoint(self, path: Union[str, Path]) -> None:
+        if self._net is None:
+            return
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload: Dict[str, Any] = {
+            "net": self._net,
+            "A_norm": self._A_norm,
+            "n_nodes": self._n_nodes,
+            "pred_len": self._pred_len,
+        }
+        # STSGCN stores an additional dense A_st
+        if hasattr(self, "_A_st"):
+            payload["A_st"] = getattr(self, "_A_st")
+        torch.save(payload, p)
+
+    def load_checkpoint(self, path: Union[str, Path], *, device: Optional[torch.device] = None) -> None:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {p}")
+        ckpt = torch.load(p, map_location=device or "cpu", weights_only=False)
+        self._net = ckpt["net"]
+        self._A_norm = ckpt.get("A_norm")
+        self._n_nodes = ckpt.get("n_nodes")
+        self._pred_len = ckpt.get("pred_len")
+        if "A_st" in ckpt:
+            self._A_st = ckpt["A_st"]
+
+    def setup_graph_dataloaders(self, bundle: ProcBundle) -> None:
+        """Rebuild graph dataloaders without training (needed after load_checkpoint)."""
+        dls: Dict[str, DataLoader] = {}
+        for split in ("train", "val", "test"):
+            ds = GraphWindowDataset(bundle, split=split)
+            dls[split] = DataLoader(
+                ds,
+                batch_size=int(self.batch_size),
+                shuffle=False,
+                collate_fn=graph_collate,
+                drop_last=False,
+            )
+        self._graph_dataloaders = dls
+
+    # ── fit ───────────────────────────────────────────────────────────────────
+
+    def fit(self, bundle: ProcBundle, *, device: Optional[torch.device] = None) -> None:
+        dev = device if device is not None else torch.device("cpu")
+        torch.manual_seed(int(self.seed))
+
+        # Extract lat/lon from the raw aligned data (pre-transform values)
+        raw_aligned = bundle.raw.aligned
+        col_names = list(raw_aligned.schema.continuous_cols)
+        try:
+            lat_idx = col_names.index(str(self.lat_col))
+            lon_idx = col_names.index(str(self.lon_col))
+        except ValueError as exc:
+            raise ValueError(
+                f"GNN graph build failed: column '{exc}' not found in continuous_cols "
+                f"{col_names}. Set lat_col / lon_col hparams to the correct names."
+            ) from exc
+
+        # Take the first time step — lat/lon are static across time
+        lats = raw_aligned.values[:, 0, lat_idx]
+        lons = raw_aligned.values[:, 0, lon_idx]
+        latlon = {
+            str(z): (float(lat), float(lon))
+            for z, lat, lon in zip(raw_aligned.zipcodes, lats, lons)
+        }
+
+        geo = build_knn_geo_graph(
+            bundle.raw.aligned.zipcodes,
+            latlon,
+            k=int(self.graph_k),
+            max_km=float(self.graph_max_km),
+        )
+        n_nodes = int(bundle.aligned_proc.values.shape[0])
+        self._n_nodes = n_nodes
+        self._pred_len = int(bundle.raw.spec.pred_len)
+
+        A = sparse_adj(geo.edge_index[0], geo.edge_index[1], n_nodes,
+                       weight=geo.edge_weight, device=dev)
+        self._A_norm = normalize_adj_sym(A).cpu()
+
+        # Graph-structured dataloaders (one item = all N nodes × one time window)
+        graph_dls: Dict[str, DataLoader] = {}
+        for split in ("train", "val", "test"):
+            ds = GraphWindowDataset(bundle, split=split)
+            graph_dls[split] = DataLoader(
+                ds,
+                batch_size=int(self.batch_size),
+                shuffle=(split == "train"),
+                collate_fn=graph_collate,
+                drop_last=False,
+            )
+        self._graph_dataloaders = graph_dls
+
+        net = self._build_net(bundle, n_nodes, A_norm=self._A_norm, device=dev).to(dev)
+        opt = Adam(net.parameters(), lr=float(self.lr), weight_decay=float(self.weight_decay))
+
+        train_dl = graph_dls["train"]
+        val_dl = graph_dls["val"]
+        pred_len = self._pred_len
+
+        best_val = math.inf
+        best_state: Optional[Dict[str, torch.Tensor]] = None
+        bad_epochs = 0
+        self.train_history = []
+
+        _max_bt = int(self.max_train_batches) if self.max_train_batches is not None else None
+        _train_total = min(len(train_dl), _max_bt) if _max_bt is not None else len(train_dl)
+
+        epoch_bar = tqdm(range(int(self.epochs)), desc=f"[{self.name}]", unit="ep")
+        for ep in epoch_bar:
+            t_ep0 = time.perf_counter()
+
+            # ── train ────────────────────────────────────────────────────────
+            net.train()
+            train_sse, train_n = 0.0, 0
+            train_bar = tqdm(train_dl, desc="  train", total=_train_total, leave=False, unit="bt")
+            for bi, batch in enumerate(train_bar):
+                if _max_bt is not None and bi >= _max_bt:
+                    train_bar.close()
+                    break
+
+                x = batch["x"].to(dev)       # [B, L, N, Dx]
+                y_true = batch["y"].to(dev)   # [B*N, pred_len, Dy]
+                B = x.shape[0]
+
+                y_hat = self._graph_forward(net, x)  # [B, pred_len, N, Dy]
+                Dy = y_hat.shape[-1]
+                y_hat_flat = y_hat.permute(0, 2, 1, 3).reshape(B * n_nodes, pred_len, Dy)
+
+                loss = F.mse_loss(y_hat_flat, y_true)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                if float(self.grad_clip) > 0:
+                    nn.utils.clip_grad_norm_(net.parameters(), max_norm=float(self.grad_clip))
+                opt.step()
+
+                train_sse += float(loss.detach().item()) * y_true.numel()
+                train_n += y_true.numel()
+                train_bar.set_postfix({"loss": f"{float(loss.detach().item()):.4g}"})
+
+            # ── validate ─────────────────────────────────────────────────────
+            net.eval()
+            sse, n_val = 0.0, 0
+            with torch.no_grad():
+                val_bar = tqdm(val_dl, desc="  val  ", leave=False, unit="bt")
+                for batch in val_bar:
+                    x = batch["x"].to(dev)
+                    y_true = batch["y"].to(dev)
+                    B = x.shape[0]
+                    y_hat = self._graph_forward(net, x)
+                    Dy = y_hat.shape[-1]
+                    y_hat_flat = y_hat.permute(0, 2, 1, 3).reshape(B * n_nodes, pred_len, Dy)
+                    diff = (y_hat_flat - y_true).float()
+                    sse += float((diff * diff).sum().item())
+                    n_val += diff.numel()
+                    val_bar.set_postfix({"mse": f"{sse / max(n_val, 1):.4g}"})
+
+            val_mse = sse / max(n_val, 1)
+            train_mse = train_sse / max(train_n, 1)
+            ep_time = time.perf_counter() - t_ep0
+
+            self.train_history.append({
+                "epoch": int(ep + 1),
+                "train_mse": float(train_mse),
+                "val_mse": float(val_mse),
+                "epoch_time_sec": float(ep_time),
+            })
+
+            if val_mse < best_val - 1e-12:
+                best_val = val_mse
+                best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+                bad_epochs = 0
+            else:
+                bad_epochs += 1
+                if bad_epochs >= int(self.patience):
+                    epoch_bar.close()
+                    break
+
+            epoch_bar.set_postfix({
+                "train": f"{train_mse:.4g}",
+                "val":   f"{val_mse:.4g}",
+                "best":  f"{best_val:.4g}",
+            })
+
+        if best_state is not None:
+            net.load_state_dict(best_state)
+        self._net = net
+
+    # ── predict_batch ─────────────────────────────────────────────────────────
+
+    def predict_batch(
+        self,
+        batch: Dict[str, Any],
+        *,
+        bundle: ProcBundle,
+        device: Optional[torch.device] = None,
+    ) -> torch.Tensor:
+        if self._net is None:
+            raise RuntimeError(f"{self.name} must be fit() before predict_batch()")
+        dev = device if device is not None else next(self._net.parameters()).device
+        self._net.to(dev)
+        self._net.eval()
+
+        x = batch["x"].to(dev)  # [B, L, N, Dx]
+        B, L, N, _ = x.shape
+
+        with torch.no_grad():
+            y_hat = self._graph_forward(self._net, x)  # [B, pred_len, N, Dy]
+
+        Dy = y_hat.shape[-1]
+        return y_hat.permute(0, 2, 1, 3).reshape(B * N, self._pred_len, Dy)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concrete forecasters
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register("gcn_tcn")
+class GCNTCNForecaster(GNNForecasterBase):
+    """GCN + TCN forecaster on a geographic k-NN graph."""
+
+    name: str = "gcn_tcn"
+    hidden_dim: int = 32
+    dropout: float = 0.1
+    tcn_kernel: int = 3
+
+    def _build_net(self, bundle, n_nodes, *, A_norm, device):
+        return GeoGCN_TCN(
+            input_dim=len(bundle.x_cols),
+            hidden_dim=int(self.hidden_dim),
+            pred_len=int(bundle.raw.spec.pred_len),
+            dropout=float(self.dropout),
+            tcn_kernel=int(self.tcn_kernel),
+        )
+
+    def _graph_forward(self, net, x):
+        return net(x, self._A_norm.to(x.device))
+
+
+@register("graph_wavenet")
+class GraphWaveNetForecaster(GNNForecasterBase):
+    """Graph WaveNet forecaster with learnable adaptive adjacency."""
+
+    name: str = "graph_wavenet"
+    residual_channels: int = 32
+    dilation_channels: int = 32
+    skip_channels: int = 64
+    end_channels: int = 128
+    kernel_size: int = 2
+    n_blocks: int = 2
+    n_layers: int = 2
+    gcn_order: int = 2
+    dropout: float = 0.1
+    adaptive_adj: bool = True
+    adaptive_emb_dim: int = 8
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._base_edge_index: Optional[torch.Tensor] = None
+
+    def _build_net(self, bundle, n_nodes, *, A_norm, device):
+        # Convert sparse A_norm to COO edge_index for the adaptive adj module
+        A_dense = A_norm.to(device).to_dense()
+        r, c = A_dense.nonzero(as_tuple=True)
+        self._base_edge_index = torch.stack([r.cpu(), c.cpu()], dim=0)
+
+        return GraphWaveNet(
+            input_dim=len(bundle.x_cols),
+            pred_len=int(bundle.raw.spec.pred_len),
+            n_nodes=n_nodes,
+            residual_channels=int(self.residual_channels),
+            dilation_channels=int(self.dilation_channels),
+            skip_channels=int(self.skip_channels),
+            end_channels=int(self.end_channels),
+            kernel_size=int(self.kernel_size),
+            n_blocks=int(self.n_blocks),
+            n_layers=int(self.n_layers),
+            gcn_order=int(self.gcn_order),
+            dropout=float(self.dropout),
+            adaptive_adj=bool(self.adaptive_adj),
+            adaptive_emb_dim=int(self.adaptive_emb_dim),
+            base_edge_index=self._base_edge_index,
+        )
+
+    def _graph_forward(self, net, x):
+        # GraphWaveNet expects a list of support matrices
+        return net(x, [self._A_norm.to(x.device)])
+
+
+@register("stgcn")
+class STGCNForecaster(GNNForecasterBase):
+    """STGCN: Chebyshev graph conv + gated temporal conv blocks."""
+
+    name: str = "stgcn"
+    hidden_dim: int = 32
+    n_blocks: int = 2
+    Kt: int = 3
+    dropout: float = 0.1
+
+    def _build_net(self, bundle, n_nodes, *, A_norm, device):
+        return STGCN(
+            input_dim=len(bundle.x_cols),
+            hidden_dim=int(self.hidden_dim),
+            pred_len=int(bundle.raw.spec.pred_len),
+            n_blocks=int(self.n_blocks),
+            Kt=int(self.Kt),
+            dropout=float(self.dropout),
+        )
+
+    def _graph_forward(self, net, x):
+        return net(x, self._A_norm.to(x.device))
+
+
+@register("stsgcn")
+class STSGCNForecaster(GNNForecasterBase):
+    """STSGCN: Spatial-Temporal Synchronous GCN (Wu et al., AAAI 2020).
+
+    Builds a spatial-temporal synchronous adjacency by stacking T_local copies
+    of the spatial graph (diagonal blocks) and connecting consecutive time steps
+    with identity matrices (off-diagonal blocks).  A GCN applied to this
+    T_local·N × T_local·N graph captures spatial and temporal correlations
+    **synchronously** in a single operation, without the sequential
+    spatial→temporal decomposition used by GCN-TCN or STGCN.
+
+    Reference: https://github.com/Davidham3/STSGCN
+    """
+
+    name: str = "stsgcn"
+    hidden_dim: int = 32
+    T_local: int = 3
+    n_layers: int = 2
+    dropout: float = 0.1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._A_st: Optional[torch.Tensor] = None  # dense [T_local*N, T_local*N], CPU
+
+    def _build_net(self, bundle, n_nodes, *, A_norm, device):
+        A_dense = A_norm.to(device).to_dense()
+        self._A_st = _build_st_adj(A_dense, int(self.T_local)).cpu()
+
+        return STSGCNet(
+            input_dim=len(bundle.x_cols),
+            hidden_dim=int(self.hidden_dim),
+            pred_len=int(bundle.raw.spec.pred_len),
+            n_nodes=n_nodes,
+            T_local=int(self.T_local),
+            n_layers=int(self.n_layers),
+            dropout=float(self.dropout),
+        )
+
+    def _graph_forward(self, net, x):
+        return net(x, self._A_st.to(x.device))
