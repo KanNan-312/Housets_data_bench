@@ -46,7 +46,7 @@ class FeatureSchema:
     target_col: str = "price"
 
     # columns to drop from modeling
-    drop_cols: Tuple[str, ...] = ("city", "city_full")
+    drop_cols: Tuple[str, ...] = ("city", "city_full", "metro")
 
     # time marker columns derived from time_col
     time_mark_cols: Tuple[str, ...] = ("year", "month")
@@ -84,6 +84,9 @@ class FeatureSchema:
         else:
             # move target to front for stable ordering
             continuous = [target_col] + [c for c in continuous if c != target_col]
+
+        # Remove the long lat columns (if exist) from the continuous columns
+        continuous = [c for c in continuous if c not in ["longitude", "latitude"]]
 
         return cls(
             id_col=id_col,

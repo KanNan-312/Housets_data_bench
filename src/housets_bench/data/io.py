@@ -85,6 +85,13 @@ def three_stage_impute(
     *,
     per_feature_global_median: Optional[np.ndarray] = None,
 ) -> np.ndarray:
+    """
+    Impute missing values in a (Z, T, D) array using a three-stage strategy:
+    (1) forward-fill within each entity's time series, (2) fill remaining
+    missing values with the entity-specific feature median, and (3) fall back
+    to the global feature median. Entirely missing series are filled directly
+    with the global feature median.
+    """
     x = values.copy()
 
     Z, T, D = x.shape
@@ -147,14 +154,18 @@ def align_to_tensor(
         tm[t, 1] = int(d.month)
 
     cols = list(schema.continuous_cols)
+    values_arr = df[cols].to_numpy(dtype=np.float32)  # shape: (num_rows, D)
+    zi_arr = df[schema.id_col].map(zip_to_i).to_numpy()
+    ti_arr = df[schema.time_col].map(lambda d: date_to_t[pd.Timestamp(d)]).to_numpy()
+    values[zi_arr, ti_arr, :] = values_arr
 
-    for _, row in df.iterrows():
-        z = row[schema.id_col]
-        d = row[schema.time_col]
-        zi = zip_to_i[z]
-        ti = date_to_t[pd.Timestamp(d)]
-        vals = row[cols].to_numpy(dtype=np.float32, copy=False)
-        values[zi, ti, :] = vals
+    # for _, row in df.iterrows():
+    #     z = row[schema.id_col]
+    #     d = row[schema.time_col]
+    #     zi = zip_to_i[z]
+    #     ti = date_to_t[pd.Timestamp(d)]
+    #     vals = row[cols].to_numpy(dtype=np.float32, copy=False)
+    #     values[zi, ti, :] = vals
 
     if coerce_negative_to_zero:
         values = np.where(values < 0, 0.0, values)
