@@ -1,0 +1,19 @@
+model:
+  name: timellm
+  hparams:
+    patch_len: 3
+    stride: 1
+    d_model: 64
+    n_heads: 4
+    d_keys: 32
+    n_prototypes: 64
+    prompt_len: 8
+    gpt_layers: 6
+    dropout: 0.1
+    pretrained: true
+    epochs: 10
+    lr: 1.0e-3
+    weight_decay: 0.0
+    grad_clip: 1.0
+    patience: 3
+    seed: 0

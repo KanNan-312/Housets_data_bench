@@ -1,0 +1,14 @@
+model:
+  name: itransformer
+  hparams:
+    d_model: 128
+    n_heads: 4
+    e_layers: 2
+    d_ff: 256
+    dropout: 0.1
+    epochs: 20
+    lr: 1.0e-3
+    weight_decay: 0.0
+    grad_clip: 1.0
+    patience: 5
+    seed: 0

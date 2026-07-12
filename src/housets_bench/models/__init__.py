@@ -9,14 +9,17 @@ from .ml.rf import RandomForestPCAForecaster
 from .ml.xgb import XGBPCAForecaster 
 
 # deep learning baselines
-from .dl.rnn import RNNForecaster  
-from .dl.lstm import LSTMForecaster  
-from .dl.dlinear import DLinearForecaster  
-from .dl.timemixer import TimeMixerForecaster 
-from .dl.patchtst import PatchTSTForecaster  
-from .dl.informer import InformerForecaster 
-from .dl.autoformer import AutoformerForecaster  
-from .dl.fedformer import FEDformerForecaster 
+from .dl.rnn import RNNForecaster
+from .dl.lstm import LSTMForecaster
+from .dl.dlinear import DLinearForecaster
+from .dl.timemixer import TimeMixerForecaster
+from .dl.patchtst import PatchTSTForecaster
+from .dl.informer import InformerForecaster
+from .dl.autoformer import AutoformerForecaster
+from .dl.fedformer import FEDformerForecaster
+from .dl.itransformer import iTransformerForecaster
+from .dl.gpt4ts import GPT4TSForecaster
+from .dl.timellm import TimeLLMForecaster
 
 # graph neural network baselines
 from .gnn.gnn_forecaster import (  # noqa: F401
