@@ -125,3 +125,126 @@ def build_knn_geo_graph(
     edge_weight = w.astype(np.float32)
 
     return GeoGraph(edge_index=edge_index, edge_weight=edge_weight)
+
+
+import matplotlib.pyplot as plt
+import networkx as nx
+
+
+def plot_geo_graph(
+    graph: GeoGraph,
+    zipcodes,
+    latlon_by_zip,
+    *,
+    show_edge_distance=True,
+    figsize=(10, 8),
+):
+    """
+    Plot graph using actual latitude/longitude.
+
+    Nodes:
+        - positioned by (lon, lat)
+        - labelled with ZIP code
+
+    Edges:
+        - drawn between connected nodes
+        - optionally labelled with distance (km)
+    """
+
+    zips = [_normalize_zip(z) for z in zipcodes]
+
+    G = nx.Graph()
+
+    pos = {}
+
+    # Add nodes
+    for i, z in enumerate(zips):
+        if z not in latlon_by_zip:
+            continue
+
+        lat, lon = latlon_by_zip[z]
+
+        # x = longitude, y = latitude
+        pos[i] = (lon, lat)
+
+        G.add_node(i, label=z)
+
+    # Add edges
+    edge_labels = {}
+
+    for src, dst in graph.edge_index.T:
+        src = int(src)
+        dst = int(dst)
+
+        if src == dst:
+            continue
+
+        if src not in pos or dst not in pos:
+            continue
+
+        G.add_edge(src, dst)
+
+        if show_edge_distance:
+            lat1, lon1 = latlon_by_zip[zips[src]]
+            lat2, lon2 = latlon_by_zip[zips[dst]]
+
+            # haversine
+            lat1, lon1, lat2, lon2 = np.deg2rad(
+                [lat1, lon1, lat2, lon2]
+            )
+
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+
+            a = (
+                np.sin(dlat / 2) ** 2
+                + np.cos(lat1)
+                * np.cos(lat2)
+                * np.sin(dlon / 2) ** 2
+            )
+
+            c = 2 * np.arcsin(np.sqrt(a))
+            km = EARTH_RADIUS_KM * c
+
+            edge_labels[(src, dst)] = f"{km:.1f}"
+
+    plt.figure(figsize=figsize)
+
+    nx.draw_networkx_edges(
+        G,
+        pos,
+        edge_color="gray",
+        alpha=0.6,
+        width=1.5,
+    )
+
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        node_color="steelblue",
+        node_size=300,
+    )
+
+    node_labels = {i: zips[i] for i in G.nodes}
+    nx.draw_networkx_labels(
+        G,
+        pos,
+        labels=node_labels,
+        font_size=8,
+    )
+
+    if show_edge_distance:
+        nx.draw_networkx_edge_labels(
+            G,
+            pos,
+            edge_labels=edge_labels,
+            font_size=6,
+        )
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.title("Geographic k-NN Graph")
+    plt.grid(True)
+    plt.axis("equal")
+    plt.tight_layout()
+    plt.savefig("graph_structure.png")
+

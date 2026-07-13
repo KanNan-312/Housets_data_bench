@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from housets_bench.bundles.datatypes import ProcBundle
 from housets_bench.data.graph_dataset import GraphWindowDataset, graph_collate
-from housets_bench.graph.geo_knn import build_knn_geo_graph
+from housets_bench.graph.geo_knn import build_knn_geo_graph, plot_geo_graph
 from housets_bench.graph.torch_adj import normalize_adj_sym, sparse_adj
 from housets_bench.models.base import BaseForecaster
 from housets_bench.models.registry import register
@@ -317,6 +317,7 @@ class GNNForecasterBase(BaseForecaster):
             k=int(self.graph_k),
             max_km=float(self.graph_max_km),
         )
+        plot_geo_graph(geo, bundle.raw.aligned.zipcodes, latlon); import sys; sys.exit()
         n_nodes = int(bundle.aligned_proc.values.shape[0])
         self._n_nodes = n_nodes
         self._pred_len = int(bundle.raw.spec.pred_len)
