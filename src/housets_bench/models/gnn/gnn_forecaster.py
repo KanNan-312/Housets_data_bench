@@ -317,7 +317,7 @@ class GNNForecasterBase(BaseForecaster):
             k=int(self.graph_k),
             max_km=float(self.graph_max_km),
         )
-        plot_geo_graph(geo, bundle.raw.aligned.zipcodes, latlon); import sys; sys.exit()
+        # plot_geo_graph(geo, bundle.raw.aligned.zipcodes, latlon); import sys; sys.exit()
         n_nodes = int(bundle.aligned_proc.values.shape[0])
         self._n_nodes = n_nodes
         self._pred_len = int(bundle.raw.spec.pred_len)
