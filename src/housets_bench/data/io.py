@@ -18,6 +18,7 @@ class AlignedData:
     values: np.ndarray
     time_marks: np.ndarray
     schema: FeatureSchema
+    latlon: dict[str, tuple]
 
     @property
     def n_zip(self) -> int:
@@ -172,6 +173,14 @@ def align_to_tensor(
 
     if impute:
         values = three_stage_impute(values)
+    
+    latlon = (
+        df[["zipcode", "latitude", "longitude"]]
+        .drop_duplicates()
+        .set_index("zipcode")[["latitude", "longitude"]]
+        .apply(lambda row: (float(row["latitude"]), float(row["longitude"])), axis=1)
+        .to_dict()
+    )
 
     return AlignedData(
         zipcodes=list(zipcodes),
@@ -179,6 +188,7 @@ def align_to_tensor(
         values=values.astype(np.float32, copy=False),
         time_marks=tm,
         schema=schema,
+        latlon=latlon
     )
 
 

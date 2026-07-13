@@ -292,23 +292,24 @@ class GNNForecasterBase(BaseForecaster):
 
         # Extract lat/lon from the raw aligned data (pre-transform values)
         raw_aligned = bundle.raw.aligned
-        col_names = list(raw_aligned.schema.continuous_cols)
-        try:
-            lat_idx = col_names.index(str(self.lat_col))
-            lon_idx = col_names.index(str(self.lon_col))
-        except ValueError as exc:
-            raise ValueError(
-                f"GNN graph build failed: column '{exc}' not found in continuous_cols "
-                f"{col_names}. Set lat_col / lon_col hparams to the correct names."
-            ) from exc
+        # col_names = list(raw_aligned.schema.continuous_cols)
+        # try:
+        #     lat_idx = col_names.index(str(self.lat_col))
+        #     lon_idx = col_names.index(str(self.lon_col))
+        # except ValueError as exc:
+        #     raise ValueError(
+        #         f"GNN graph build failed: column '{exc}' not found in continuous_cols "
+        #         f"{col_names}. Set lat_col / lon_col hparams to the correct names."
+        #     ) from exc
 
-        # Take the first time step — lat/lon are static across time
-        lats = raw_aligned.values[:, 0, lat_idx]
-        lons = raw_aligned.values[:, 0, lon_idx]
-        latlon = {
-            str(z): (float(lat), float(lon))
-            for z, lat, lon in zip(raw_aligned.zipcodes, lats, lons)
-        }
+        # # Take the first time step — lat/lon are static across time
+        # lats = raw_aligned.values[:, 0, lat_idx]
+        # lons = raw_aligned.values[:, 0, lon_idx]
+        # latlon = {
+        #     str(z): (float(lat), float(lon))
+        #     for z, lat, lon in zip(raw_aligned.zipcodes, lats, lons)
+        # }
+        latlon = raw_aligned.latlon
 
         geo = build_knn_geo_graph(
             bundle.raw.aligned.zipcodes,

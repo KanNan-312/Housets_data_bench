@@ -51,6 +51,7 @@ def build_proc_bundle(
         values=values_proc,
         time_marks=aligned.time_marks,
         schema=proc_schema,
+        latlon=aligned.latlon
     )
 
     # 2) Decide x/y columns
