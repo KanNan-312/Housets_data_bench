@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seq-len", type=int, default=6)
     p.add_argument("--label-len", type=int, default=3)
     p.add_argument("--pred-len", type=int, default=3)
+    p.add_argument(
+        "--test-stride",
+        type=int,
+        default=1,
+        help="stride between consecutive test windows (>1 strides through the test set to save eval cost)",
+    )
 
     p.add_argument("--train-ratio", type=float, default=0.7)
     p.add_argument("--val-ratio", type=float, default=0.1)
@@ -177,7 +183,12 @@ def main() -> None:
         aligned.values = aligned.values[zip_mask]
 
     split = make_ratio_split(aligned.n_time, train_ratio=args.train_ratio, val_ratio=args.val_ratio)
-    spec = make_window_spec(seq_len=args.seq_len, pred_len=args.pred_len, label_len=args.label_len)
+    spec = make_window_spec(
+        seq_len=args.seq_len,
+        pred_len=args.pred_len,
+        label_len=args.label_len,
+        test_stride=args.test_stride,
+    )
 
     pipeline = TransformPipeline([StageSpec(LogTransform(mode="log1p"), idx=None)])
 
@@ -290,6 +301,7 @@ def main() -> None:
         "features_mode": str(args.features_mode),
         "pad_to": pad_to,
         "batch_size": int(args.batch_size),
+        "test_stride": int(args.test_stride),
         "device": str(dev) if dev is not None else "cpu",
         "foundation": {
             "timesfm_repo_id": str(args.timesfm_repo_id),

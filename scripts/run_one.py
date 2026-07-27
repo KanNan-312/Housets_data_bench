@@ -37,6 +37,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-zip", type=int, default=None)
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--max-eval-batches", type=int, default=None)
+    p.add_argument(
+        "--test-stride",
+        type=int,
+        default=None,
+        help="stride between consecutive test windows (>1 strides through the test set instead of "
+        "sliding one step at a time, to cut evaluation cost); default from window config is 1",
+    )
 
     # artifacts
     p.add_argument("--out-root", type=str, default=str(REPO_ROOT / "runs"))
@@ -67,6 +74,8 @@ def main() -> None:
         cfg.setdefault("run", {})["device"] = args.device
     if args.max_eval_batches is not None:
         cfg.setdefault("run", {})["max_eval_batches"] = int(args.max_eval_batches)
+    if args.test_stride is not None:
+        cfg.setdefault("window", {})["test_stride"] = int(args.test_stride)
 
     # apply --set overrides
     deep_update(cfg, pop_cli_overrides(args.overrides))

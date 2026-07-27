@@ -70,6 +70,7 @@ def build_proc_bundle(
     for split_name in ("train", "val", "test"):
         split_range = split.range(split_name)
         allow_history = split_name != "train"
+        stride = spec.test_stride if split_name == "test" else 1
         indices[split_name] = generate_window_indices(
             values=aligned_proc.values,
             split_range=split_range,
@@ -79,6 +80,7 @@ def build_proc_bundle(
             spec=spec,
             allow_history=allow_history,
             require_finite=True,
+            stride=stride,
         )
 
     # 4) Datasets + dataloaders

@@ -12,16 +12,24 @@ class WindowSpec:
     seq_len: int
     label_len: int
     pred_len: int
+    test_stride: int = 1
 
 
-def make_window_spec(seq_len: int, pred_len: int, label_len: Optional[int] = None) -> WindowSpec:
+def make_window_spec(
+    seq_len: int,
+    pred_len: int,
+    label_len: Optional[int] = None,
+    test_stride: int = 1,
+) -> WindowSpec:
     if seq_len <= 0 or pred_len <= 0:
         raise ValueError("seq_len and pred_len must be positive")
     if label_len is None:
         label_len = max(1, seq_len // 2)
     if not (0 <= label_len <= seq_len):
         raise ValueError("label_len must be in [0, seq_len]")
-    return WindowSpec(seq_len=seq_len, label_len=label_len, pred_len=pred_len)
+    if test_stride <= 0:
+        raise ValueError("test_stride must be positive")
+    return WindowSpec(seq_len=seq_len, label_len=label_len, pred_len=pred_len, test_stride=test_stride)
 
 
 def generate_window_indices(
@@ -34,11 +42,14 @@ def generate_window_indices(
     spec: WindowSpec,
     allow_history: bool = True,
     require_finite: bool = True,
+    stride: int = 1,
 ) -> List[Tuple[int, int]]:
     Z, T, _ = values.shape
     start, end = split_range
     if not (0 <= start < end <= T):
         raise ValueError(f"Invalid split_range {split_range} for T={T}")
+    if stride <= 0:
+        raise ValueError("stride must be positive")
 
     seq_len = spec.seq_len
     pred_len = spec.pred_len
@@ -56,7 +67,7 @@ def generate_window_indices(
     idx_list: List[Tuple[int, int]] = []
 
     for zi in range(Z):
-        for t0 in range(t0_min, t0_max + 1):
+        for t0 in range(t0_min, t0_max + 1, stride):
             t_pred_start = t0 + seq_len
             t_pred_end = t_pred_start + pred_len
 

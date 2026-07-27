@@ -49,7 +49,7 @@ def _log_dataset_summary(aligned: AlignedData, bundle: ProcBundle) -> None:
     print(f"  train: {_dr(*split.train)}  ({t_train} months,  {n_train} samples){_warn(n_train, 'train')}")
     print(f"  val:   {_dr(*split.val)}  ({t_val} months,  {n_val} samples){_warn(n_val, 'val')}")
     print(f"  test:  {_dr(*split.test)}  ({t_test} months,  {n_test} samples){_warn(n_test, 'test')}")
-    print(f"  window:  seq_len={raw.spec.seq_len}  pred_len={raw.spec.pred_len}  label_len={raw.spec.label_len}")
+    print(f"  window:  seq_len={raw.spec.seq_len}  pred_len={raw.spec.pred_len}  label_len={raw.spec.label_len}  test_stride={raw.spec.test_stride}")
     print(f"  features_mode={raw.features_mode}  |  x_cols={len(bundle.x_cols)}  y_cols={len(bundle.y_cols)}")
     print(f"  pipeline: {bundle.pipeline.summary()}")
     print("=" * 60)
@@ -193,6 +193,7 @@ def build_bundle_from_cfg(
         seq_len=int(window_cfg.get("seq_len", 6)),
         pred_len=int(window_cfg.get("pred_len", 3)),
         label_len=int(window_cfg.get("label_len", 3)),
+        test_stride=int(window_cfg.get("test_stride", 1)),
     )
 
     # features mode

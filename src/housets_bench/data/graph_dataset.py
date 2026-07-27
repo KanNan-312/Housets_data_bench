@@ -62,7 +62,11 @@ class GraphWindowDataset(Dataset):
             t0_start = split_range[0]
         else:
             t0_start = max(0, split_range[0] - seq_len)
-        self._time_anchors: List[int] = list(range(t0_start, t0_end + 1))
+
+        # test_stride > 1 strides through non-overlapping test anchors instead
+        # of every consecutive t0, to cut evaluation cost on expensive models.
+        stride = bundle.raw.spec.test_stride if split == "test" else 1
+        self._time_anchors: List[int] = list(range(t0_start, t0_end + 1, stride))
         self._seq_len = seq_len
         self._pred_len = pred_len
 
