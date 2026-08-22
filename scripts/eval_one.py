@@ -61,7 +61,7 @@ def main() -> None:
         raise SystemExit(f"config.yaml not found in {run_dir}")
 
     cfg: Dict[str, Any] = load_yaml(config_path)
-    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.adjacency_path"])
+    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.path"])
 
     # device
     run_cfg = cfg.get("run", {}) or {}
@@ -81,8 +81,6 @@ def main() -> None:
         time_col=str(data_cfg.get("time_col", "date")),
         drop_cols=data_cfg.get("drop_cols", ("city", "city_full", "metro")),
         feature_cols=data_cfg.get("feature_cols"),
-        lat_col=str(data_cfg.get("lat_col", "latitude")),
-        lon_col=str(data_cfg.get("lon_col", "longitude")),
         impute=bool(data_cfg.get("impute", True)),
     )
     n_zip = int(data_cfg.get("n_zip", 0) or 0)

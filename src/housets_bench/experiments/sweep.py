@@ -13,7 +13,7 @@ from housets_bench.bundles.datatypes import ProcBundle
 from housets_bench.data.io import AlignedData, load_aligned, subsample_zips
 from housets_bench.data.split import make_split
 from housets_bench.data.windowing import make_window_spec, WindowSpec
-from housets_bench.graph.geo_knn import GraphConfig
+from housets_bench.graph.loader import GraphConfig
 from housets_bench.metrics.evaluator import evaluate_forecaster
 from housets_bench.metrics.loss import evaluate_mse_loss, extract_train_history, sync_device
 from housets_bench.models.registry import get as get_model
@@ -51,7 +51,7 @@ def _log_dataset_summary(aligned: AlignedData, bundle: ProcBundle) -> None:
     print(f"  test:  {_dr(*split.test)}  ({t_test} months,  {n_test} samples){_warn(n_test, 'test')}")
     print(f"  window:  seq_len={raw.spec.seq_len}  pred_len={raw.spec.pred_len}  label_len={raw.spec.label_len}  test_stride={raw.spec.test_stride}")
     print(f"  features_mode={raw.features_mode}  |  x_cols={len(bundle.x_cols)}  y_cols={len(bundle.y_cols)}")
-    print(f"  graph: mode={raw.graph.mode}" + (f"  k={raw.graph.k}  max_km={raw.graph.max_km}" if raw.graph.mode == "knn" else f"  adjacency_path={raw.graph.adjacency_path}"))
+    print(f"  graph: path={raw.graph.path}")
     print(f"  pipeline: {bundle.pipeline.summary()}")
     print("=" * 60)
 
@@ -213,12 +213,7 @@ def build_bundle_from_cfg(
     pad_to_val: Optional[int] = None if pad_to <= 0 else pad_to
 
     graph_yaml = cfg.get("graph", {}) or {}
-    graph_cfg = GraphConfig(
-        mode=str(graph_yaml.get("mode", "knn")),
-        k=int(graph_yaml.get("k", 10)),
-        max_km=graph_yaml.get("max_km", 100.0),
-        adjacency_path=graph_yaml.get("adjacency_path"),
-    )
+    graph_cfg = GraphConfig(path=graph_yaml.get("path"))
 
     bundle = build_proc_bundle(
         aligned,
@@ -252,8 +247,6 @@ def run_one_cfg(
             time_col=str(data_cfg.get("time_col", "date")),
             drop_cols=data_cfg.get("drop_cols", ("city", "city_full", "metro")),
             feature_cols=data_cfg.get("feature_cols"),
-            lat_col=str(data_cfg.get("lat_col", "latitude")),
-            lon_col=str(data_cfg.get("lon_col", "longitude")),
             impute=bool(data_cfg.get("impute", True)),
         )
         n_zip = int(data_cfg.get("n_zip", 0) or 0)

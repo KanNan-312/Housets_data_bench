@@ -47,24 +47,18 @@ data:
   time_col: date
   target_col: price
   feature_cols: [median_sale_price, homes_sold, ...]  # null => auto-infer all numeric cols
-  drop_cols: [city, metro, state]
-  lat_col: latitude
-  lon_col: longitude
+  drop_cols: [city, metro, state, latitude, longitude]
   freq: M
 graph:
-  mode: knn            # knn | adjacency
-  k: 10
-  max_km: 100.0
-  adjacency_path: null
+  path: null            # graph.npz for GNN models — see "GNN models" section below
 ```
 
 Minimal schema requirements for a new dataset CSV: an id column, a time column (parsed as
-a timestamp), and the target column. If you're using a GNN model in `knn` mode, also
-include `latitude`/`longitude` columns (constant per id) — the loader reads them directly,
-no separate geocoding step is needed. If `feature_cols` is set, only those columns (plus
-id/time/target/lat/lon) are read and modeled — everything else in the CSV is ignored.
-Missing values are handled with a benchmark imputation routine; the loader adds `year` and
-`month` time markers from the time column.
+a timestamp), and the target column. If `feature_cols` is set, only those columns (plus
+id/time/target) are read and modeled — everything else in the CSV is ignored. Missing
+values are handled with a benchmark imputation routine; the loader adds `year` and `month`
+time markers from the time column. The benchmark itself never reads lat/lon or builds a
+graph — see "GNN models" below for how the graph is supplied.
 
 Add a new dataset by copying `configs/dataset/dc_house.yaml` and pointing it at your CSV.
 
@@ -182,20 +176,38 @@ The current `configs/models/` directory includes the following model configs.
 
 ## GNN models: dataloader structure
 
-GNN models (GCN-TCN, STGCN, GraphWaveNet, STSGCN) need a node adjacency graph. This is a
-dataset-level property (not per-model), configured in the `graph:` block of the
-dataset config (see `configs/dataset/dc_house.yaml`) — either mode:
+GNN models (GCN-TCN, STGCN, GraphWaveNet, STSGCN, ST-LLM+) need a node adjacency graph.
+The benchmark never builds this itself (no implicit lat/lon handling) — it only loads a
+precomputed graph from a `.npz` file, pointed to by `graph.path` in the dataset config
+(dataset-level, not per-model, since every GNN model on a dataset shares the same graph):
 
-- **`mode: knn`** (default) — builds a k-NN graph from the `lat_col`/`lon_col` columns
-  already present in the dataset CSV (no separate geocoding step). Tune `k` / `max_km`.
-- **`mode: adjacency`** — loads a precomputed `[N, N]` adjacency matrix directly from
-  `adjacency_path` (`.npy`, or `.csv` with a header/index of ids that get reindexed to
-  match the dataset's ZIP ordering). `N` must equal the number of nodes actually used by
-  the run (i.e. after any `--n-zip` subsampling).
+```python
+np.savez("graph.npz", A=A, ids=np.array(ids))
+```
+
+- `A`: dense `[N, N]` adjacency matrix.
+- `ids`: length-`N` array of region ids giving `A`'s row/column order (`ids[i]` is the
+  region at row/col `i`) — these must match the dataset's id column values.
+
+At load time (`src/housets_bench/graph/loader.py`), the graph is **reindexed by matching
+`ids` against the dataset's actual region ids** — not by trusting row order — so it works
+correctly regardless of what order the matrix was built in, and after any `--n-zip`
+subsampling (only the subsampled regions are looked up; a region missing from `ids` raises
+a clear error rather than silently misaligning).
 
 ```bash
 python scripts/run_one.py --dataset dc_house --model gcn_tcn --window w6_h6 \
-  --set graph.mode=adjacency --set graph.adjacency_path=data/dc_house_adj.npy
+  --set graph.path=data/dc_house_graph.npz
+```
+
+If you need a geographic k-NN graph from lat/lon, `scripts/build_knn_graph.py` is a
+standalone offline builder (not imported by the benchmark) that produces this `graph.npz`
+format from a lat/lon CSV:
+
+```bash
+python scripts/build_knn_graph.py --input data/DC_House.csv \
+  --id-col zipcode --lat-col latitude --lon-col longitude \
+  --k 10 --max-km 100 --out data/dc_house_graph.npz
 ```
 
 ### Why GNN dataloaders are different

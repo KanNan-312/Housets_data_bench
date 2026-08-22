@@ -9,7 +9,7 @@ from housets_bench.data.io import AlignedData
 from housets_bench.data.split import TimeSplit
 from housets_bench.data.windowing import WindowSpec
 from housets_bench.data.dataset import WindowDataset
-from housets_bench.graph.geo_knn import GraphConfig
+from housets_bench.graph.loader import GraphConfig
 from housets_bench.transforms.pipeline import TransformPipeline
 
 

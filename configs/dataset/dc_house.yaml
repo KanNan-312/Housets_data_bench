@@ -18,15 +18,14 @@ data:
     - median_dom
     - avg_sale_to_list
     - Total Population
-  drop_cols: [city, metro, state]
-  lat_col: latitude
-  lon_col: longitude
+  drop_cols: [city, metro, state, latitude, longitude]
   freq: M   # monthly
   impute: true
   n_zip: 0  # 0 => use all ZIPs
 
 graph:
-  mode: knn          # knn (build from lat/lon) | adjacency (load a matrix file)
-  k: 10
-  max_km: 100.0
-  adjacency_path: null
+  # path to a graph.npz file with 'A' ([N,N] adjacency matrix) and 'ids'
+  # (length-N array of region ids giving A's row/col order) — required by GNN
+  # models (gcn_tcn, graph_wavenet, stgcn, stsgcn, stllm_plus). See
+  # scripts/build_knn_graph.py for a standalone builder if you need one.
+  path: null

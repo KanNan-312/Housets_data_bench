@@ -97,7 +97,7 @@ def main() -> None:
     deep_update(cfg, pop_cli_overrides(args.overrides))
 
     # resolve relative paths
-    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.adjacency_path"])
+    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.path"])
 
     # pre-compute run dir so checkpoint can be saved during the run
     _dataset_name = str((cfg.get("dataset", {}) or {}).get("name", args.dataset))

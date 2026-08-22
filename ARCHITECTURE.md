@@ -40,7 +40,7 @@ run_one.py
   print JSON result
 ```
 
-`--set key=value` can override any nested config key at the CLI (e.g. `--set graph.mode=adjacency`).
+`--set key=value` can override any nested config key at the CLI (e.g. `--set graph.path=data/g.npz`).
 
 ---
 
@@ -66,17 +66,19 @@ CLI `--set` overrides are applied last via `pop_cli_overrides`.
 ### Step 1 – Load raw table
 
 ```
-load_aligned(path, target_col, id_col, time_col, drop_cols, feature_cols, lat_col, lon_col)
+load_aligned(path, target_col, id_col, time_col, drop_cols, feature_cols)
   read_table()              # csv / parquet / xlsx
   FeatureSchema.infer(df)   # feature_cols given → schema is exactly those + target;
-                             # feature_cols=None → auto-infer numeric cols (drop non-numeric/id/time/drop_cols/lat/lon)
+                             # feature_cols=None → auto-infer numeric cols (drop non-numeric/id/time/drop_cols)
   clean_raw_table()         # parse dates, normalize ids, drop non-feature cols, add year/month
-  align_to_tensor()         # pivot → np.ndarray [Z, T, D]  +  three_stage_impute()  +  latlon dict (if lat/lon cols present)
-  → AlignedData(zipcodes, dates, values[Z,T,D], time_marks[T,2], schema, latlon)
+  align_to_tensor()         # pivot → np.ndarray [Z, T, D]  +  three_stage_impute()
+  → AlignedData(zipcodes, dates, values[Z,T,D], time_marks[T,2], schema)
 ```
 
-All of the above (target/id/time/feature columns, drop list, lat/lon column names) come
-from one `configs/dataset/<name>.yaml` file, selected via `--dataset`.
+All of the above (target/id/time/feature columns, drop list) come from one
+`configs/dataset/<name>.yaml` file, selected via `--dataset`. The benchmark never reads
+lat/lon or builds a graph itself — GNN models load a precomputed graph.npz instead (see
+`graph/loader.py` and the GNN section in README.md).
 
 ### Step 2 – Split
 
@@ -169,7 +171,7 @@ All public class attributes (e.g. `epochs`, `lr`, `hidden_size`) become hyper-pa
 | Stats | `stats/ardl.py` | statsmodels ARDL |
 | Naive | `naive/ar_univariate.py` | per-ZIP AR(p) |
 | Foundation | `foundation/{chronos,timesfm}.py` | zero-shot or fine-tuned |
-| GNN | `gnn/gnn_forecaster.py` (+ `gcn_tcn_geo,graph_wavenet,stgcn` net modules) | spatial graph models; graph built per `RawBundle.graph` (knn or adjacency) |
+| GNN | `gnn/gnn_forecaster.py` (+ `gcn_tcn_geo,graph_wavenet,stgcn` net modules) | spatial graph models; graph loaded from `RawBundle.graph.path` (a graph.npz) |
 
 ---
 
@@ -303,7 +305,7 @@ run_one_cfg(cfg, device)
 | `FeatureSchema` | `data/schema.py` | Column roles: id, time, target, continuous, drop |
 | `TimeSplit` | `data/split.py` | Integer index ranges for train/val/test |
 | `WindowSpec` | `data/windowing.py` | `seq_len`, `label_len`, `pred_len`, `test_stride` |
-| `GraphConfig` | `graph/geo_knn.py` | `mode` (knn/adjacency), `k`, `max_km`, `adjacency_path` — from dataset config |
+| `GraphConfig` | `graph/loader.py` | `path` to a graph.npz (A + ids arrays) — from dataset config |
 | `RawBundle` | `bundles/datatypes.py` | `AlignedData + TimeSplit + WindowSpec + features_mode + GraphConfig` |
 | `ProcBundle` | `bundles/datatypes.py` | Everything a model needs: processed data, dataloaders, pipeline |
 | `EvalResult` | `metrics/evaluator.py` | `log_rmse`, `rmse`, `mape`, `mae`, `log_mae`, `n_points` |

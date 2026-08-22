@@ -65,8 +65,6 @@ class FeatureSchema:
         drop_cols: Sequence[str] = ("city", "city_full"),
         extra_exclude: Sequence[str] = (),
         feature_cols: Optional[Sequence[str]] = None,
-        lat_col: str = "latitude",
-        lon_col: str = "longitude",
     ) -> "FeatureSchema":
         """Build the modeling schema for a dataset.
 
@@ -104,10 +102,6 @@ class FeatureSchema:
 
         # move target to front for stable ordering
         continuous = [target_col] + [c for c in continuous if c != target_col]
-
-        # Remove the lat/lon columns (if present) from the continuous columns —
-        # they're graph metadata, not forecasting features.
-        continuous = [c for c in continuous if c not in (lon_col, lat_col)]
 
         return cls(
             id_col=id_col,

@@ -29,8 +29,7 @@ from tqdm import tqdm
 
 from housets_bench.bundles.datatypes import ProcBundle
 from housets_bench.data.graph_dataset import GraphWindowDataset, graph_collate
-from housets_bench.graph.adjacency import load_adjacency_graph
-from housets_bench.graph.geo_knn import build_knn_geo_graph
+from housets_bench.graph.loader import load_graph
 from housets_bench.graph.torch_adj import normalize_adj_sym, sparse_adj
 from housets_bench.models.base import BaseForecaster
 from housets_bench.models.registry import register
@@ -285,26 +284,15 @@ class GNNForecasterBase(BaseForecaster):
         dev = device if device is not None else torch.device("cpu")
         torch.manual_seed(int(self.seed))
 
-        # Build the node adjacency from the dataset-level graph config: either a
-        # geographic k-NN graph from lat/lon, or a directly-supplied matrix.
+        # Load the precomputed node adjacency graph (dataset-level config).
         raw_aligned = bundle.raw.aligned
         graph_cfg = bundle.raw.graph
-
-        if graph_cfg.mode == "adjacency":
-            if not graph_cfg.adjacency_path:
-                raise ValueError(
-                    "graph.mode='adjacency' requires graph.adjacency_path to be set in the dataset config"
-                )
-            geo = load_adjacency_graph(graph_cfg.adjacency_path, raw_aligned.zipcodes)
-        elif graph_cfg.mode == "knn":
-            geo = build_knn_geo_graph(
-                raw_aligned.zipcodes,
-                raw_aligned.latlon,
-                k=int(graph_cfg.k),
-                max_km=graph_cfg.max_km,
+        if not graph_cfg.path:
+            raise ValueError(
+                f"{self.name} requires graph.path to be set in the dataset config, "
+                "pointing at a graph.npz file with 'A' and 'ids' arrays"
             )
-        else:
-            raise ValueError(f"Unknown graph.mode={graph_cfg.mode!r}; expected 'knn' or 'adjacency'")
+        geo = load_graph(graph_cfg.path, raw_aligned.zipcodes)
 
         n_nodes = int(bundle.aligned_proc.values.shape[0])
         self._n_nodes = n_nodes

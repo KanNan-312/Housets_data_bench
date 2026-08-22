@@ -9,7 +9,7 @@ from housets_bench.data.schema import FeatureSchema
 from housets_bench.data.split import TimeSplit
 from housets_bench.data.windowing import WindowSpec, generate_window_indices
 from housets_bench.bundles.datatypes import ProcBundle, RawBundle
-from housets_bench.graph.geo_knn import GraphConfig
+from housets_bench.graph.loader import GraphConfig
 from housets_bench.transforms.pipeline import TransformPipeline
 
 
@@ -53,7 +53,6 @@ def build_proc_bundle(
         values=values_proc,
         time_marks=aligned.time_marks,
         schema=proc_schema,
-        latlon=aligned.latlon
     )
 
     # 2) Decide x/y columns
