@@ -5,24 +5,25 @@
 ```
 Housets_data_bench/
 ├── configs/                  # YAML config fragments
-│   ├── default.yaml          # base defaults (data path, split ratios, transforms, dataloader)
-│   ├── task/                 # univariate.yaml / multivariate.yaml  (features_mode)
-│   ├── windows/              # w6_h3.yaml … w12_h12.yaml  (seq_len, label_len, pred_len)
-│   └── models/               # one file per model  (model.name, model.hparams)
+│   ├── default.yaml          # base defaults (split ratios, transforms, dataloader)
+│   ├── dataset/               # one file per dataset (path, id/time/target/feature cols, graph)
+│   ├── task/                  # univariate.yaml / multivariate.yaml  (features_mode)
+│   ├── windows/                # w6_h3.yaml … w12_h12.yaml  (seq_len, label_len, pred_len)
+│   └── models/                  # one file per model  (model.name, model.hparams)
 ├── scripts/
-│   ├── run_one.py            # ← main entry point
-│   ├── run_sweep.py          # grid-sweep helper
-│   ├── run_dl_baselines.py   # batch runner for DL models
-│   └── ...
+│   ├── run_one.py             # ← main entry point
+│   ├── eval_one.py            # re-evaluate a saved checkpoint
+│   └── make_report.py         # collect runs/ into result tables
 ├── src/housets_bench/
-│   ├── data/                 # loading, schema, imputation, windowing, dataset
-│   ├── bundles/              # RawBundle / ProcBundle dataclasses + builder
-│   ├── transforms/           # log / clip / zscore / pca stages + pipeline
-│   ├── models/               # all forecasters (base, registry, dl/, ml/, stats/, etc.)
-│   ├── metrics/              # evaluator, loss helpers, regression metrics
-│   ├── experiments/          # runner.py, sweep.py, artifacts.py
-│   └── utils/                # config loading, deep_update, path resolution
-└── runs/                     # output directory (auto-created)
+│   ├── data/                   # loading, schema, imputation, split, windowing, dataset
+│   ├── graph/                   # k-NN graph / adjacency-matrix loading, sparse adj utils
+│   ├── bundles/                  # RawBundle / ProcBundle dataclasses + builder
+│   ├── transforms/                # log / clip / zscore / pca stages + pipeline
+│   ├── models/                     # all forecasters (base, registry, dl/, ml/, stats/, gnn/, ...)
+│   ├── metrics/                     # evaluator, loss helpers, regression metrics
+│   ├── experiments/                  # sweep.py, artifacts.py
+│   └── utils/                         # config loading, deep_update, path resolution
+└── runs/<dataset>/<model>__<task>__<window>/   # output directory (auto-created)
 ```
 
 ---
@@ -31,15 +32,15 @@ Housets_data_bench/
 
 ```
 run_one.py
-  parse_args()          # --task, --window, --model, --data, --device, --set …
-  load + deep_update    # merge default.yaml → task → window → model configs
+  parse_args()          # --dataset, --task, --window, --model, --device, --test-stride, --test-cutoff-date, --set …
+  load + deep_update    # merge default.yaml → dataset → task → window → model configs
   run_one_cfg(cfg)      # ← all real work happens here  (experiments/sweep.py)
-  make_run_dir()        # runs/<model>__<task>__<window>/
+  make_run_dir()        # runs/<dataset>/<model>__<task>__<window>/
   save_yaml / save_json # config.yaml, metrics.json, env.json
   print JSON result
 ```
 
-`--set key=value` can override any nested config key at the CLI.
+`--set key=value` can override any nested config key at the CLI (e.g. `--set graph.mode=adjacency`).
 
 ---
 
@@ -48,10 +49,11 @@ run_one.py
 Configs are plain YAML dicts that are **deep-merged** in this order:
 
 ```
-configs/default.yaml          (baseline settings for everything)
-configs/task/<task>.yaml      (sets task.features_mode: S / MS)
-configs/windows/<window>.yaml (sets window.seq_len, pred_len, label_len)
-configs/models/<model>.yaml   (sets model.name, model.hparams.*)
+configs/default.yaml           (baseline settings: split, dataloader, transforms, run)
+configs/dataset/<dataset>.yaml (data.* — path/id/time/target/feature cols; graph.*)
+configs/task/<task>.yaml       (sets task.features_mode: S / MS)
+configs/windows/<window>.yaml  (sets window.seq_len, pred_len, label_len, test_stride)
+configs/models/<model>.yaml    (sets model.name, model.hparams.*)
 ```
 
 `deep_update(base, override)` recursively merges dicts; scalars override.  
@@ -64,19 +66,25 @@ CLI `--set` overrides are applied last via `pop_cli_overrides`.
 ### Step 1 – Load raw table
 
 ```
-load_aligned(path, target_col="price")
+load_aligned(path, target_col, id_col, time_col, drop_cols, feature_cols, lat_col, lon_col)
   read_table()              # csv / parquet / xlsx
-  FeatureSchema.infer(df)   # detects id_col, time_col, continuous_cols, drop non-numeric
-  clean_raw_table()         # parse dates, normalize zipcodes, drop non-feature cols, add year/month
-  align_to_tensor()         # pivot → np.ndarray [Z, T, D]  +  three_stage_impute()
-  → AlignedData(zipcodes, dates, values[Z,T,D], time_marks[T,2], schema)
+  FeatureSchema.infer(df)   # feature_cols given → schema is exactly those + target;
+                             # feature_cols=None → auto-infer numeric cols (drop non-numeric/id/time/drop_cols/lat/lon)
+  clean_raw_table()         # parse dates, normalize ids, drop non-feature cols, add year/month
+  align_to_tensor()         # pivot → np.ndarray [Z, T, D]  +  three_stage_impute()  +  latlon dict (if lat/lon cols present)
+  → AlignedData(zipcodes, dates, values[Z,T,D], time_marks[T,2], schema, latlon)
 ```
+
+All of the above (target/id/time/feature columns, drop list, lat/lon column names) come
+from one `configs/dataset/<name>.yaml` file, selected via `--dataset`.
 
 ### Step 2 – Split
 
 ```
-make_ratio_split(n_time, train_ratio=0.7, val_ratio=0.1)
-  → TimeSplit(train=(0, t1), val=(t1, t2), test=(t2, T))
+make_split(n_time, dates, train_ratio=0.7, val_ratio=0.1, test_start_date=None)
+  test_start_date=None      → make_ratio_split(): TimeSplit(train=(0, t1), val=(t1, t2), test=(t2, T))
+  test_start_date="2022-01-01" → test starts at the first date >= cutoff; train/val split
+                                   the remaining pre-cutoff span by train_ratio/val_ratio
 ```
 Boundaries are integer time-step indices into the `dates` axis.
 
@@ -93,8 +101,9 @@ Boundaries are integer time-step indices into the `dates` axis.
       MS → x=[all features], y=[target]
       M  → x=[all], y=[all]
 
-3. generate_window_indices(values_proc, split_range, spec)
+3. generate_window_indices(values_proc, split_range, spec, stride)
       → list of (zip_idx, time_idx) anchor tuples per split
+      stride=1 for train/val; stride=spec.test_stride for test (>1 skips windows to cut eval cost)
 
 4. WindowDataset(aligned_proc, indices, spec)
       __getitem__ returns dict:
@@ -160,7 +169,7 @@ All public class attributes (e.g. `epochs`, `lr`, `hidden_size`) become hyper-pa
 | Stats | `stats/ardl.py` | statsmodels ARDL |
 | Naive | `naive/ar_univariate.py` | per-ZIP AR(p) |
 | Foundation | `foundation/{chronos,timesfm}.py` | zero-shot or fine-tuned |
-| GNN | `gnn/{gcn_tcn_geo,graph_wavenet,stgcn}.py` | spatial graph models |
+| GNN | `gnn/gnn_forecaster.py` (+ `gcn_tcn_geo,graph_wavenet,stgcn` net modules) | spatial graph models; graph built per `RawBundle.graph` (knn or adjacency) |
 
 ---
 
@@ -293,7 +302,8 @@ run_one_cfg(cfg, device)
 | `AlignedData` | `data/io.py` | Raw tensor `[Z, T, D]` + metadata before transforms |
 | `FeatureSchema` | `data/schema.py` | Column roles: id, time, target, continuous, drop |
 | `TimeSplit` | `data/split.py` | Integer index ranges for train/val/test |
-| `WindowSpec` | `data/windowing.py` | `seq_len`, `label_len`, `pred_len` |
-| `RawBundle` | `bundles/datatypes.py` | `AlignedData + TimeSplit + WindowSpec + features_mode` |
+| `WindowSpec` | `data/windowing.py` | `seq_len`, `label_len`, `pred_len`, `test_stride` |
+| `GraphConfig` | `graph/geo_knn.py` | `mode` (knn/adjacency), `k`, `max_km`, `adjacency_path` — from dataset config |
+| `RawBundle` | `bundles/datatypes.py` | `AlignedData + TimeSplit + WindowSpec + features_mode + GraphConfig` |
 | `ProcBundle` | `bundles/datatypes.py` | Everything a model needs: processed data, dataloaders, pipeline |
 | `EvalResult` | `metrics/evaluator.py` | `log_rmse`, `rmse`, `mape`, `mae`, `log_mae`, `n_points` |

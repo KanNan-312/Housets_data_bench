@@ -18,6 +18,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
 
     p.add_argument("--config-dir", type=str, default=str(REPO_ROOT / "configs"))
+    p.add_argument(
+        "--dataset",
+        type=str,
+        default="dc_house",
+        help="dataset config name under configs/dataset (target/feature cols, path, graph settings, ...)",
+    )
     p.add_argument("--task", type=str, default="multivariate", choices=["univariate", "multivariate"])
     p.add_argument(
         "--window",
@@ -44,6 +50,13 @@ def parse_args() -> argparse.Namespace:
         help="stride between consecutive test windows (>1 strides through the test set instead of "
         "sliding one step at a time, to cut evaluation cost); default from window config is 1",
     )
+    p.add_argument(
+        "--test-cutoff-date",
+        type=str,
+        default=None,
+        help="exact date (e.g. 2022-01-01) at which the test split begins; overrides ratio-based "
+        "splitting for the test boundary (train/val before it are still split by ratio)",
+    )
 
     # artifacts
     p.add_argument("--out-root", type=str, default=str(REPO_ROOT / "runs"))
@@ -61,6 +74,7 @@ def main() -> None:
 
     cfg: Dict[str, Any] = {}
     deep_update(cfg, load_yaml(cfg_dir / "default.yaml"))
+    deep_update(cfg, load_yaml(cfg_dir / "dataset" / f"{args.dataset}.yaml"))
     deep_update(cfg, load_yaml(cfg_dir / "task" / f"{args.task}.yaml"))
     deep_update(cfg, load_yaml(cfg_dir / "windows" / f"{args.window}.yaml"))
     deep_update(cfg, load_yaml(cfg_dir / "models" / f"{args.model}.yaml"))
@@ -76,18 +90,21 @@ def main() -> None:
         cfg.setdefault("run", {})["max_eval_batches"] = int(args.max_eval_batches)
     if args.test_stride is not None:
         cfg.setdefault("window", {})["test_stride"] = int(args.test_stride)
+    if args.test_cutoff_date is not None:
+        cfg.setdefault("split", {})["test_start_date"] = args.test_cutoff_date
 
     # apply --set overrides
     deep_update(cfg, pop_cli_overrides(args.overrides))
 
     # resolve relative paths
-    resolve_relpaths(cfg, root=REPO_ROOT)
+    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.adjacency_path"])
 
     # pre-compute run dir so checkpoint can be saved during the run
+    _dataset_name = str((cfg.get("dataset", {}) or {}).get("name", args.dataset))
     _model_name = str((cfg.get("model", {}) or {}).get("name", "unknown"))
     _task_name = str((cfg.get("task", {}) or {}).get("name", "unknown"))
     _window_name = str((cfg.get("window", {}) or {}).get("name", "unknown"))
-    run_name = args.run_name or f"{_model_name}__{_task_name}__{_window_name}"
+    run_name = args.run_name or f"{_dataset_name}/{_model_name}__{_task_name}__{_window_name}"
     paths = make_run_dir(root=args.out_root, name=run_name, exist_ok=True)
     save_yaml(paths.config_path, cfg)
 

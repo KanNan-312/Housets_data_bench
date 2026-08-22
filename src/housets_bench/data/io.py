@@ -127,6 +127,8 @@ def align_to_tensor(
     *,
     impute: bool = True,
     coerce_negative_to_zero: bool = True,
+    lat_col: str = "latitude",
+    lon_col: str = "longitude",
 ) -> AlignedData:
     df = df.copy()
 
@@ -173,14 +175,18 @@ def align_to_tensor(
 
     if impute:
         values = three_stage_impute(values)
-    
-    latlon = (
-        df[["zipcode", "latitude", "longitude"]]
-        .drop_duplicates()
-        .set_index("zipcode")[["latitude", "longitude"]]
-        .apply(lambda row: (float(row["latitude"]), float(row["longitude"])), axis=1)
-        .to_dict()
-    )
+
+    if lat_col in df.columns and lon_col in df.columns:
+        latlon = (
+            df[[schema.id_col, lat_col, lon_col]]
+            .dropna(subset=[lat_col, lon_col])
+            .drop_duplicates(subset=[schema.id_col])
+            .set_index(schema.id_col)[[lat_col, lon_col]]
+            .apply(lambda row: (float(row[lat_col]), float(row[lon_col])), axis=1)
+            .to_dict()
+        )
+    else:
+        latlon = {}
 
     return AlignedData(
         zipcodes=list(zipcodes),
@@ -197,12 +203,44 @@ def load_aligned(
     *,
     schema: Optional[FeatureSchema] = None,
     target_col: str = "price",
+    id_col: str = "zipcode",
+    time_col: str = "date",
+    drop_cols: Sequence[str] = ("city", "city_full", "metro"),
+    feature_cols: Optional[Sequence[str]] = None,
+    lat_col: str = "latitude",
+    lon_col: str = "longitude",
     impute: bool = True,
 ) -> AlignedData:
     df = read_table(path)
 
     if schema is None:
-        schema = FeatureSchema.infer(df, target_col=target_col)
+        schema = FeatureSchema.infer(
+            df,
+            id_col=id_col,
+            time_col=time_col,
+            target_col=target_col,
+            drop_cols=drop_cols,
+            feature_cols=feature_cols,
+            lat_col=lat_col,
+            lon_col=lon_col,
+        )
 
     df = clean_raw_table(df, schema)
-    return align_to_tensor(df, schema, impute=impute)
+    return align_to_tensor(df, schema, impute=impute, lat_col=lat_col, lon_col=lon_col)
+
+
+def subsample_zips(aligned: AlignedData, n_zip: int) -> AlignedData:
+    """Keep only the first ``n_zip`` ZIPs (no-op if ``n_zip <= 0`` or already smaller)."""
+    if n_zip <= 0 or aligned.n_zip <= n_zip:
+        return aligned
+    zips = aligned.zipcodes[:n_zip]
+    zip_mask = np.isin(np.array(aligned.zipcodes), np.array(zips))
+    kept = list(np.array(aligned.zipcodes)[zip_mask])
+    return AlignedData(
+        zipcodes=kept,
+        dates=aligned.dates,
+        values=aligned.values[zip_mask],
+        time_marks=aligned.time_marks,
+        schema=aligned.schema,
+        latlon={z: v for z, v in aligned.latlon.items() if z in set(kept)},
+    )

@@ -1,0 +1,24 @@
+# Template config for the full HouseTS dataset (data/raw/HouseTS.csv).
+# Not usable until that file is present locally — see README.md for the
+# download link. Adjust feature_cols/drop_cols once the file is in place.
+dataset:
+  name: housets
+
+data:
+  path: data/raw/HouseTS.csv
+  id_col: zipcode
+  time_col: date
+  target_col: price
+  feature_cols: null   # null => auto-infer all numeric columns (safe default; narrow this once you know the schema)
+  drop_cols: [city, city_full, metro, state]
+  lat_col: latitude
+  lon_col: longitude
+  freq: M   # monthly
+  impute: true
+  n_zip: 0
+
+graph:
+  mode: knn
+  k: 10
+  max_km: 100.0
+  adjacency_path: null

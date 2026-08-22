@@ -9,6 +9,7 @@ from housets_bench.data.schema import FeatureSchema
 from housets_bench.data.split import TimeSplit
 from housets_bench.data.windowing import WindowSpec, generate_window_indices
 from housets_bench.bundles.datatypes import ProcBundle, RawBundle
+from housets_bench.graph.geo_knn import GraphConfig
 from housets_bench.transforms.pipeline import TransformPipeline
 
 
@@ -38,6 +39,7 @@ def build_proc_bundle(
     num_workers: int = 0,
     pad_to: Optional[int] = None,
     shuffle_train: bool = True,
+    graph_cfg: Optional[GraphConfig] = None,
 ) -> ProcBundle:
 
     # 1) Fit+transform full tensor
@@ -109,7 +111,13 @@ def build_proc_bundle(
     raw_target = aligned.schema.target_col
     raw_target_index = list(aligned.schema.continuous_cols).index(raw_target)
 
-    raw = RawBundle(aligned=aligned, split=split, spec=spec, features_mode=features_mode)
+    raw = RawBundle(
+        aligned=aligned,
+        split=split,
+        spec=spec,
+        features_mode=features_mode,
+        graph=graph_cfg if graph_cfg is not None else GraphConfig(),
+    )
 
     return ProcBundle(
         raw=raw,

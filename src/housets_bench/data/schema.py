@@ -64,29 +64,50 @@ class FeatureSchema:
         target_col: str = "price",
         drop_cols: Sequence[str] = ("city", "city_full"),
         extra_exclude: Sequence[str] = (),
+        feature_cols: Optional[Sequence[str]] = None,
+        lat_col: str = "latitude",
+        lon_col: str = "longitude",
     ) -> "FeatureSchema":
-        """Infer continuous columns from dtypes, excluding id/time and known non-features."""
+        """Build the modeling schema for a dataset.
+
+        If ``feature_cols`` is given, the schema uses exactly those columns
+        (plus ``target_col``) — nothing else is read/modeled. Otherwise
+        continuous columns are auto-inferred from dtypes, excluding id/time
+        and known non-features (previous default behavior).
+        """
+        if target_col not in df.columns:
+            raise ValueError(f"target_col={target_col!r} not found in df columns")
+
+        if feature_cols is not None:
+            missing = [c for c in feature_cols if c not in df.columns]
+            if missing:
+                raise ValueError(f"feature_cols not found in df columns: {missing}")
+            continuous = [target_col] + [c for c in feature_cols if c != target_col]
+            return cls(
+                id_col=id_col,
+                time_col=time_col,
+                target_col=target_col,
+                drop_cols=tuple(drop_cols),
+                time_mark_cols=("year", "month"),
+                continuous_cols=tuple(continuous),
+            )
+
         exclude = set(drop_cols) | set(extra_exclude) | {id_col, time_col}
         exclude |= {"year", "month"}
 
-        continuous: List[str] = []
+        continuous = []
         for c in df.columns:
             if c in exclude:
                 continue
             if _is_numeric_dtype(df[c].dtype):
                 continuous.append(c)
 
-        if target_col not in df.columns:
-            raise ValueError(f"target_col={target_col!r} not found in df columns")
-        if target_col not in continuous:
-            # ensure target is included for M/MS tasks
-            continuous = [target_col] + [c for c in continuous if c != target_col]
-        else:
-            # move target to front for stable ordering
-            continuous = [target_col] + [c for c in continuous if c != target_col]
+        # move target to front for stable ordering
+        continuous = [target_col] + [c for c in continuous if c != target_col]
 
-        # Remove the long lat columns (if exist) from the continuous columns
-        continuous = [c for c in continuous if c not in ["longitude", "latitude"]]
+        # Remove the lat/lon columns (if present) from the continuous columns —
+        # they're graph metadata, not forecasting features.
+        continuous = [c for c in continuous if c not in (lon_col, lat_col)]
 
         return cls(
             id_col=id_col,

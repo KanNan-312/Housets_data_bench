@@ -29,7 +29,8 @@ from tqdm import tqdm
 
 from housets_bench.bundles.datatypes import ProcBundle
 from housets_bench.data.graph_dataset import GraphWindowDataset, graph_collate
-from housets_bench.graph.geo_knn import build_knn_geo_graph, plot_geo_graph
+from housets_bench.graph.adjacency import load_adjacency_graph
+from housets_bench.graph.geo_knn import build_knn_geo_graph
 from housets_bench.graph.torch_adj import normalize_adj_sym, sparse_adj
 from housets_bench.models.base import BaseForecaster
 from housets_bench.models.registry import register
@@ -206,12 +207,6 @@ class GNNForecasterBase(BaseForecaster):
     max_train_batches: Optional[int] = None
     seed: int = 0
 
-    # ── graph hparams ─────────────────────────────────────────────────────────
-    lat_col: str = "latitude"
-    lon_col: str = "longitude"
-    graph_k: int = 10
-    graph_max_km: float = 100.0
-
     def __init__(self) -> None:
         self._net: Optional[nn.Module] = None
         self._A_norm: Optional[torch.Tensor] = None   # sparse adj, CPU
@@ -290,34 +285,27 @@ class GNNForecasterBase(BaseForecaster):
         dev = device if device is not None else torch.device("cpu")
         torch.manual_seed(int(self.seed))
 
-        # Extract lat/lon from the raw aligned data (pre-transform values)
+        # Build the node adjacency from the dataset-level graph config: either a
+        # geographic k-NN graph from lat/lon, or a directly-supplied matrix.
         raw_aligned = bundle.raw.aligned
-        # col_names = list(raw_aligned.schema.continuous_cols)
-        # try:
-        #     lat_idx = col_names.index(str(self.lat_col))
-        #     lon_idx = col_names.index(str(self.lon_col))
-        # except ValueError as exc:
-        #     raise ValueError(
-        #         f"GNN graph build failed: column '{exc}' not found in continuous_cols "
-        #         f"{col_names}. Set lat_col / lon_col hparams to the correct names."
-        #     ) from exc
+        graph_cfg = bundle.raw.graph
 
-        # # Take the first time step — lat/lon are static across time
-        # lats = raw_aligned.values[:, 0, lat_idx]
-        # lons = raw_aligned.values[:, 0, lon_idx]
-        # latlon = {
-        #     str(z): (float(lat), float(lon))
-        #     for z, lat, lon in zip(raw_aligned.zipcodes, lats, lons)
-        # }
-        latlon = raw_aligned.latlon
+        if graph_cfg.mode == "adjacency":
+            if not graph_cfg.adjacency_path:
+                raise ValueError(
+                    "graph.mode='adjacency' requires graph.adjacency_path to be set in the dataset config"
+                )
+            geo = load_adjacency_graph(graph_cfg.adjacency_path, raw_aligned.zipcodes)
+        elif graph_cfg.mode == "knn":
+            geo = build_knn_geo_graph(
+                raw_aligned.zipcodes,
+                raw_aligned.latlon,
+                k=int(graph_cfg.k),
+                max_km=graph_cfg.max_km,
+            )
+        else:
+            raise ValueError(f"Unknown graph.mode={graph_cfg.mode!r}; expected 'knn' or 'adjacency'")
 
-        geo = build_knn_geo_graph(
-            bundle.raw.aligned.zipcodes,
-            latlon,
-            k=int(self.graph_k),
-            max_km=float(self.graph_max_km),
-        )
-        # plot_geo_graph(geo, bundle.raw.aligned.zipcodes, latlon); import sys; sys.exit()
         n_nodes = int(bundle.aligned_proc.values.shape[0])
         self._n_nodes = n_nodes
         self._pred_len = int(bundle.raw.spec.pred_len)

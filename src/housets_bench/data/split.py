@@ -83,3 +83,42 @@ def make_date_split(
         pass
 
     return TimeSplit(train=(0, train_end_ex), val=(train_end_ex, val_end_ex), test=(val_end_ex, len(dts)))
+
+
+def make_split(
+    n_time: int,
+    dates: Optional[Sequence[pd.Timestamp]] = None,
+    *,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.1,
+    test_start_date: Optional[str] = None,
+) -> TimeSplit:
+    """Ratio-based split, with an optional exact cutoff date for the test set.
+
+    When ``test_start_date`` is given, the test split starts at the first date
+    ``>= test_start_date`` and everything before it is divided into train/val
+    by ``train_ratio``/``val_ratio`` (relative to each other). Otherwise this
+    is equivalent to :func:`make_ratio_split`.
+    """
+    if test_start_date is None:
+        return make_ratio_split(n_time, train_ratio=train_ratio, val_ratio=val_ratio)
+
+    if not dates:
+        raise ValueError("dates is required when test_start_date is set")
+    if len(dates) != n_time:
+        raise ValueError(f"len(dates)={len(dates)} does not match n_time={n_time}")
+
+    dts = [pd.Timestamp(d) for d in dates]
+    cutoff = pd.Timestamp(test_start_date)
+    test_start = next((i for i, d in enumerate(dts) if d >= cutoff), len(dts))
+    if test_start < 2:
+        raise ValueError(f"test_start_date={test_start_date!r} leaves no room for train/val")
+    if test_start >= n_time:
+        raise ValueError(f"test_start_date={test_start_date!r} is after the last available date")
+
+    pre_n = test_start
+    train_frac = train_ratio / (train_ratio + val_ratio)
+    train_end = int(round(pre_n * train_frac))
+    train_end = max(1, min(train_end, pre_n - 1))
+
+    return TimeSplit(train=(0, train_end), val=(train_end, test_start), test=(test_start, n_time))

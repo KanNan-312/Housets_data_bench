@@ -1,13 +1,10 @@
-data:
-  # path: data/raw/HouseTS.csv
-  path: data/DC_House.csv
-  target_col: price
-  impute: true
-  n_zip: 0   # 0 => use all ZIPs
+# data + graph: come from configs/dataset/<name>.yaml (see --dataset), merged in
+# right after this file.
 
 split:
   train_ratio: 0.7
   val_ratio: 0.1
+  test_start_date: null  # e.g. "2022-01-01" — overrides ratio-based test-set boundary
 
 window:
   name: w12_h12

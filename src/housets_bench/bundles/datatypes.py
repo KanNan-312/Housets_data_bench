@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
 from torch.utils.data import DataLoader
@@ -9,6 +9,7 @@ from housets_bench.data.io import AlignedData
 from housets_bench.data.split import TimeSplit
 from housets_bench.data.windowing import WindowSpec
 from housets_bench.data.dataset import WindowDataset
+from housets_bench.graph.geo_knn import GraphConfig
 from housets_bench.transforms.pipeline import TransformPipeline
 
 
@@ -18,6 +19,7 @@ class RawBundle:
     split: TimeSplit
     spec: WindowSpec
     features_mode: str
+    graph: GraphConfig = field(default_factory=GraphConfig)
 
 
 @dataclass(frozen=True)

@@ -60,29 +60,22 @@ WINDOW_ORDER = ["w12_h12", "w12_h6"]
 
 def load_results(runs_dir: str) -> pd.DataFrame:
     rows = []
-    for run_folder in sorted(Path(runs_dir).iterdir()):
-        if not run_folder.is_dir():
-            continue
-        metrics_path = run_folder / "metrics.json"
-        if not metrics_path.exists():
-            print(f"[skip] no metrics.json in {run_folder}")
-            continue
- 
+    for metrics_path in sorted(Path(runs_dir).rglob("metrics.json")):
         with open(metrics_path) as f:
             data = json.load(f)
- 
+
         model = data.get("model")
         window = data.get("window")
         test = data.get("test", {})
- 
+
         row = {"model": model, "window": window}
         for m in METRICS:
             row[m] = test.get(m)
         rows.append(row)
- 
+
     if not rows:
         raise ValueError(f"No metrics.json files found under {runs_dir}")
- 
+
     df = pd.DataFrame(rows)
     return df
  

@@ -30,19 +30,43 @@ By default, the benchmark expects:
 
 You can also point to `.csv`, `.parquet`, or `.xlsx` via config/CLI.
 
-### Minimal schema
+### Any dataset via a dataset config
 
-Your tabular file should include at least:
-- `zipcode` (ZIP code; will be normalized to a 5-digit string)
-- `date` (timestamp; will be parsed)
-- `price` (forecast target; default `data.target_col`)
+The benchmark is dataset-agnostic: everything specific to one dataset (file path,
+id/time/target columns, which columns to model, drop list, and the graph settings for GNN
+models) lives in one YAML file under `configs/dataset/`. `configs/dataset/dc_house.yaml`
+is the working example (matches `data/DC_House.csv`); `configs/dataset/housets.yaml` is a
+template for the full HouseTS.csv.
 
-All other numeric columns are treated as continuous covariates for multivariate settings.
+```yaml
+dataset:
+  name: dc_house
+data:
+  path: data/DC_House.csv
+  id_col: zipcode
+  time_col: date
+  target_col: price
+  feature_cols: [median_sale_price, homes_sold, ...]  # null => auto-infer all numeric cols
+  drop_cols: [city, metro, state]
+  lat_col: latitude
+  lon_col: longitude
+  freq: M
+graph:
+  mode: knn            # knn | adjacency
+  k: 10
+  max_km: 100.0
+  adjacency_path: null
+```
 
-> Notes:
-> - Non-feature columns like `city` / `city_full` (if present) are dropped by default.
-> - The loader adds `year` and `month` time markers from `date`.
-> - Missing values are handled with a benchmark imputation routine.
+Minimal schema requirements for a new dataset CSV: an id column, a time column (parsed as
+a timestamp), and the target column. If you're using a GNN model in `knn` mode, also
+include `latitude`/`longitude` columns (constant per id) — the loader reads them directly,
+no separate geocoding step is needed. If `feature_cols` is set, only those columns (plus
+id/time/target/lat/lon) are read and modeled — everything else in the CSV is ignored.
+Missing values are handled with a benchmark imputation routine; the loader adds `year` and
+`month` time markers from the time column.
+
+Add a new dataset by copying `configs/dataset/dc_house.yaml` and pointing it at your CSV.
 
 
 ## Quick start
@@ -51,31 +75,43 @@ All examples below are run from the repository root.
 
 ### 1) Run a single experiment (config-driven)
 
-The config runner merges:
+The config runner merges, in order:
 - `configs/default.yaml`
+- `configs/dataset/<dataset>.yaml`
 - `configs/task/<task>.yaml`
 - `configs/windows/<window>.yaml`
 - `configs/models/<model>.yaml`
 
-Example (multivariate, window `w6_h3`, model `dlinear`):
+Runs are written to `runs/<dataset>/<model>__<task>__<window>/`.
+
+Example (dc_house, multivariate, window `w6_h3`, model `dlinear`):
 
 ```bash
 python scripts/run_one.py \
+  --dataset dc_house \
   --task multivariate \
   --window w6_h3 \
   --model dlinear \
-  --data data/raw/HouseTS.csv \
   --device gpu
 ```
 ### 2) Run a univariate baseline
 
 ```bash
 python scripts/run_one.py \
+  --dataset dc_house \
   --task univariate \
   --window w12_h6 \
   --model ar_univariate \
-  --data data/raw/HouseTS.csv \
   --device cpu
+```
+
+### 3) Cut evaluation cost on the test set
+
+```bash
+python scripts/run_one.py --dataset dc_house --model timesfm_zero --window w12_h12 \
+  --test-stride 3                    # only evaluate every 3rd test window
+python scripts/run_one.py --dataset dc_house --model dlinear --window w6_h3 \
+  --test-cutoff-date 2022-01-01      # test starts at this exact date instead of a ratio split
 ```
 
 ---
@@ -146,14 +182,21 @@ The current `configs/models/` directory includes the following model configs.
 
 ## GNN models: dataloader structure
 
-GNN models (GCN-TCN, STGCN, GraphWaveNet, STSGCN) require a geographic
-lat/lon file to build the k-NN graph adjacency.  The expected path is:
+GNN models (GCN-TCN, STGCN, GraphWaveNet, STSGCN) need a node adjacency graph. This is a
+dataset-level property (not per-model), configured in the `graph:` block of the
+dataset config (see `configs/dataset/dc_house.yaml`) — either mode:
 
-```
-data/raw/zip_latlon.csv   # columns: zipcode, lat, lon
-```
+- **`mode: knn`** (default) — builds a k-NN graph from the `lat_col`/`lon_col` columns
+  already present in the dataset CSV (no separate geocoding step). Tune `k` / `max_km`.
+- **`mode: adjacency`** — loads a precomputed `[N, N]` adjacency matrix directly from
+  `adjacency_path` (`.npy`, or `.csv` with a header/index of ids that get reindexed to
+  match the dataset's ZIP ordering). `N` must equal the number of nodes actually used by
+  the run (i.e. after any `--n-zip` subsampling).
 
-Override the path per model via `--set model.hparams.latlon_path=<path>`.
+```bash
+python scripts/run_one.py --dataset dc_house --model gcn_tcn --window w6_h6 \
+  --set graph.mode=adjacency --set graph.adjacency_path=data/dc_house_adj.npy
+```
 
 ### Why GNN dataloaders are different
 

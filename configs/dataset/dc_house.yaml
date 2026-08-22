@@ -1,0 +1,32 @@
+dataset:
+  name: dc_house
+
+data:
+  path: data/DC_House.csv
+  id_col: zipcode
+  time_col: date
+  target_col: price
+  # explicit covariate columns — the loader reads/models only these + target_col.
+  # set to null to fall back to auto-inferring all numeric columns instead.
+  feature_cols:
+    - median_sale_price
+    - median_list_price
+    - homes_sold
+    - pending_sales
+    - new_listings
+    - inventory
+    - median_dom
+    - avg_sale_to_list
+    - Total Population
+  drop_cols: [city, metro, state]
+  lat_col: latitude
+  lon_col: longitude
+  freq: M   # monthly
+  impute: true
+  n_zip: 0  # 0 => use all ZIPs
+
+graph:
+  mode: knn          # knn (build from lat/lon) | adjacency (load a matrix file)
+  k: 10
+  max_km: 100.0
+  adjacency_path: null

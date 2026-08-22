@@ -22,12 +22,11 @@ from typing import Any, Dict, List
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import numpy as np
 import torch
 
 from housets_bench.experiments.artifacts import save_json
 from housets_bench.experiments.sweep import build_bundle_from_cfg, apply_hparams
-from housets_bench.data.io import AlignedData, load_aligned
+from housets_bench.data.io import load_aligned, subsample_zips
 from housets_bench.metrics.evaluator import evaluate_forecaster
 from housets_bench.models.registry import get as get_model
 from housets_bench.utils.config import load_yaml, resolve_relpaths
@@ -62,7 +61,7 @@ def main() -> None:
         raise SystemExit(f"config.yaml not found in {run_dir}")
 
     cfg: Dict[str, Any] = load_yaml(config_path)
-    resolve_relpaths(cfg, root=REPO_ROOT)
+    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.adjacency_path"])
 
     # device
     run_cfg = cfg.get("run", {}) or {}
@@ -78,19 +77,16 @@ def main() -> None:
     aligned = load_aligned(
         data_cfg.get("path"),
         target_col=str(data_cfg.get("target_col", "price")),
+        id_col=str(data_cfg.get("id_col", "zipcode")),
+        time_col=str(data_cfg.get("time_col", "date")),
+        drop_cols=data_cfg.get("drop_cols", ("city", "city_full", "metro")),
+        feature_cols=data_cfg.get("feature_cols"),
+        lat_col=str(data_cfg.get("lat_col", "latitude")),
+        lon_col=str(data_cfg.get("lon_col", "longitude")),
         impute=bool(data_cfg.get("impute", True)),
     )
     n_zip = int(data_cfg.get("n_zip", 0) or 0)
-    if n_zip > 0 and aligned.n_zip > n_zip:
-        zips = aligned.zipcodes[:n_zip]
-        zip_mask = np.isin(np.array(aligned.zipcodes), np.array(zips))
-        aligned = AlignedData(
-            zipcodes=list(np.array(aligned.zipcodes)[zip_mask]),
-            dates=aligned.dates,
-            values=aligned.values[zip_mask],
-            time_marks=aligned.time_marks,
-            schema=aligned.schema,
-        )
+    aligned = subsample_zips(aligned, n_zip)
 
     bundle = build_bundle_from_cfg(aligned=aligned, cfg=cfg)
 
