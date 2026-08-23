@@ -27,6 +27,7 @@ import torch
 from housets_bench.experiments.artifacts import save_json
 from housets_bench.experiments.sweep import build_bundle_from_cfg, apply_hparams
 from housets_bench.data.io import load_aligned, subsample_zips
+from housets_bench.data.windowing import window_label
 from housets_bench.metrics.evaluator import evaluate_forecaster
 from housets_bench.models.registry import get as get_model
 from housets_bench.utils.config import load_yaml, resolve_relpaths
@@ -109,7 +110,7 @@ def main() -> None:
         "run_dir": str(run_dir),
         "model": model_name,
         "task": (cfg.get("task", {}) or {}).get("name"),
-        "window": (cfg.get("window", {}) or {}).get("name"),
+        "window": window_label(bundle.raw.spec),
         "pipeline": bundle.pipeline.summary(),
     }
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -208,7 +208,8 @@ class GNNForecasterBase(BaseForecaster):
 
     def __init__(self) -> None:
         self._net: Optional[nn.Module] = None
-        self._A_norm: Optional[torch.Tensor] = None   # sparse adj, CPU
+        self._A_norm: Optional[torch.Tensor] = None   # symmetric-normalized sparse adj, CPU
+        self._A_raw: Optional[torch.Tensor] = None    # unnormalized sparse adj, CPU
         self._n_nodes: Optional[int] = None
         self._pred_len: Optional[int] = None
         self._graph_dataloaders: Optional[Dict[str, DataLoader]] = None
@@ -227,8 +228,30 @@ class GNNForecasterBase(BaseForecaster):
         raise NotImplementedError
 
     def _graph_forward(self, net: nn.Module, x: torch.Tensor) -> torch.Tensor:
-        """Run network forward. Default: ``net(x, A_norm)``."""
+        """Run network forward (eval/predict — always free-running). Default: ``net(x, A_norm)``."""
         return net(x, self._A_norm.to(x.device))
+
+    def _graph_forward_train(
+        self,
+        net: nn.Module,
+        x: torch.Tensor,
+        y_true: torch.Tensor,
+        progress: float,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Training-step forward pass. Default: identical to :meth:`_graph_forward`.
+
+        Override for models that need the training-time ground truth (e.g.
+        DCRNN's scheduled sampling) or an auxiliary loss term (e.g. a VQ/GIB
+        regularizer). ``y_true`` is ``[B, pred_len, N, Dy]`` (same layout as
+        the network's own output) and ``progress`` is ``global_step /
+        total_steps`` across the whole training run, for decay schedules.
+
+        Return either a plain ``y_hat`` tensor (identical to ``_graph_forward``),
+        or a ``(y_hat, aux_loss)`` tuple — ``aux_loss`` is added to the main MSE
+        loss before backprop. Never called outside training (eval/predict always
+        use ``_graph_forward``, so no ground truth ever leaks into evaluation).
+        """
+        return self._graph_forward(net, x)
 
     def _make_optimizer(self, net: nn.Module) -> torch.optim.Optimizer:
         """Create the optimizer.  Override to filter trainable params for frozen backbones."""
@@ -301,6 +324,7 @@ class GNNForecasterBase(BaseForecaster):
         A = sparse_adj(geo.edge_index[0], geo.edge_index[1], n_nodes,
                        weight=geo.edge_weight, device=dev)
         self._A_norm = normalize_adj_sym(A).cpu()
+        self._A_raw = A.cpu()
 
         # Graph-structured dataloaders (one item = all N nodes × one time window)
         graph_dls: Dict[str, DataLoader] = {}
@@ -330,6 +354,9 @@ class GNNForecasterBase(BaseForecaster):
         _max_bt = int(self.max_train_batches) if self.max_train_batches is not None else None
         _train_total = min(len(train_dl), _max_bt) if _max_bt is not None else len(train_dl)
 
+        total_steps = max(1, int(self.epochs) * max(1, _train_total))
+        global_step = 0
+
         epoch_bar = tqdm(range(int(self.epochs)), desc=f"[{self.name}]", unit="ep")
         for ep in epoch_bar:
             t_ep0 = time.perf_counter()
@@ -347,11 +374,24 @@ class GNNForecasterBase(BaseForecaster):
                 y_true = batch["y"].to(dev)   # [B*N, pred_len, Dy]
                 B = x.shape[0]
 
-                y_hat = self._graph_forward(net, x)  # [B, pred_len, N, Dy]
+                # reshape y_true to the network's own output layout, [B, pred_len, N, Dy],
+                # for models whose training-step forward needs the ground truth (e.g.
+                # DCRNN's scheduled sampling) — inverse of the flatten below.
+                y_true_graph = y_true.reshape(B, n_nodes, pred_len, y_true.shape[-1]).permute(0, 2, 1, 3)
+                progress = global_step / total_steps
+                out = self._graph_forward_train(net, x, y_true_graph, progress)
+                global_step += 1
+                if isinstance(out, tuple):
+                    y_hat, aux_loss = out
+                else:
+                    y_hat, aux_loss = out, None
+
                 Dy = y_hat.shape[-1]
                 y_hat_flat = y_hat.permute(0, 2, 1, 3).reshape(B * n_nodes, pred_len, Dy)
 
                 loss = F.mse_loss(y_hat_flat, y_true)
+                if aux_loss is not None:
+                    loss = loss + aux_loss
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 if float(self.grad_clip) > 0:

@@ -73,58 +73,77 @@ The config runner merges, in order:
 - `configs/default.yaml`
 - `configs/dataset/<dataset>.yaml`
 - `configs/task/<task>.yaml`
-- `configs/windows/<window>.yaml`
 - `configs/models/<model>.yaml`
 
-Runs are written to `runs/<dataset>/<model>__<task>__<window>/`.
+`run_one.py` itself never sets defaults for window/split values — it only overrides the
+merged YAML config when a flag is explicitly passed. So the window shape (lookback/horizon)
+and split (train/val ratio, test cutoff) are configured either in `configs/default.yaml`
+(the global default) or per-dataset in `configs/dataset/<name>.yaml` (add a `window:`/`split:`
+block there to override for just that dataset), and the CLI flags below are for one-off
+overrides on top of whichever config is in effect.
 
-Example (dc_house, multivariate, window `w6_h3`, model `dlinear`):
+Runs are written to `runs/<dataset>/<model>__<task>__<window>/`, where `<window>` is derived
+from the effective `seq_len`/`pred_len` (e.g. `w12_h6`).
+
+Example (dc_house, multivariate, model `dlinear`, using whatever window/split configs say):
 
 ```bash
 python scripts/run_one.py \
   --dataset dc_house \
   --task multivariate \
-  --window w6_h3 \
   --model dlinear \
   --device gpu
 ```
-### 2) Run a univariate baseline
+### 2) Run a univariate baseline with a specific window shape
 
 ```bash
 python scripts/run_one.py \
   --dataset dc_house \
   --task univariate \
-  --window w12_h6 \
+  --seq-len 12 --label-len 6 --pred-len 6 \
   --model ar_univariate \
   --device cpu
 ```
 
-### 3) Cut evaluation cost on the test set
+### 3) Configure the split and cut evaluation cost on the test set
 
 ```bash
-python scripts/run_one.py --dataset dc_house --model timesfm_zero --window w12_h12 \
+python scripts/run_one.py --dataset dc_house --model timesfm_zero \
+  --seq-len 12 --pred-len 12 \
   --test-stride 3                    # only evaluate every 3rd test window
-python scripts/run_one.py --dataset dc_house --model dlinear --window w6_h3 \
+python scripts/run_one.py --dataset dc_house --model dlinear \
+  --seq-len 6 --label-len 3 --pred-len 3 \
   --test-cutoff-date 2022-01-01      # test starts at this exact date instead of a ratio split
+python scripts/run_one.py --dataset dc_house --model dlinear \
+  --train-ratio 0.8 --val-ratio 0.1  # override the train/val split of the remaining (pre-test) span
 ```
 
 ---
 
-## Window Presets
+## Window and split configuration
 
-The repository currently provides the following window presets:
+Window shape (`seq_len`/`label_len`/`pred_len`, i.e. lookback/decoder-label/horizon lengths)
+and the train/val/test split live directly in config — there is no fixed set of window
+presets to choose from. `configs/default.yaml` sets the global defaults:
 
-- `w6_h3`
-- `w6_h6`
-- `w6_h12`
-- `w12_h3`
-- `w12_h6`
-- `w12_h12`
+```yaml
+split:
+  train_ratio: 0.7        # fraction of the pre-test span used for training
+  val_ratio: 0.1          # fraction of the pre-test span used for validation
+  test_start_date: null   # e.g. "2022-01-01" — overrides ratio-based test-set boundary
 
-For example:
+window:
+  seq_len: 12             # lookback length
+  label_len: 6            # decoder label length
+  pred_len: 12            # forecast horizon
+  test_stride: 1          # >1 strides through non-overlapping test windows to cut eval cost
+```
 
-- `w6_h3`: `seq_len=6`, `label_len=3`, `pred_len=3`
-- `w12_h6`: `seq_len=12`, `label_len=6`, `pred_len=6`
+Override either block for a specific dataset by adding a `window:`/`split:` block to its
+`configs/dataset/<name>.yaml`, or override individual values from the CLI with
+`--seq-len`/`--label-len`/`--pred-len`/`--test-stride`/`--train-ratio`/`--val-ratio`/
+`--test-cutoff-date` (each only takes effect if explicitly passed), or with
+`--set window.seq_len=12` / `--set split.train_ratio=0.8` for anything else.
 
 ---
 
@@ -162,6 +181,26 @@ The current `configs/models/` directory includes the following model configs.
 - `graph_wavenet`
 - `stgcn`
 - `stsgcn`
+- `stllm_plus`
+- `dcrnn` — diffusion-convolutional seq2seq (Li et al., ICLR 2018), direct port
+- `stgformer` — spatiotemporal graph transformer (Dreamzz5/STGformer), direct port
+- `d2stgnn` — decoupled dynamic STGNN (VLDB 2022), direct port (dynamic graph is computed
+  internally each forward pass; time-of-day/day-of-week features are omitted since this
+  benchmark's datasets are monthly)
+- `cast` — causal spatio-temporal representation learning (yutong-xia/CaST), direct port
+  (self-discovers pseudo-environments via a VQ codebook — no external environment labels needed)
+- `stexplainer` — explainable STGNN (HKUDS/STExplainer), run **forecast-only**: its GIB
+  structure-distillation term is kept as an internal training regularizer, but the learned
+  explanation mask isn't surfaced anywhere since this benchmark has no explanation-quality
+  scoring path
+- `aist` — **simplified** port of the attention-based interpretable crime model
+  (YeasirRayhanPrince/aist): keeps only the graph-attention mechanism over crime counts,
+  batched over all nodes jointly; drops the paper's required taxi/POI/street-crime data and
+  its per-region training loop
+- `st_hhol` — **simplified, static-graph** port inspired by ST-HHOL's hierarchical hypergraph
+  idea: a trainable hypergraph convolution over the crime-count panel only, trained with the
+  benchmark's normal offline time split; drops the paper's weather/POI/socioeconomic/311 data
+  sources and its online/streaming training loop
 
 ### Foundation-model variants
 
@@ -196,7 +235,7 @@ subsampling (only the subsampled regions are looked up; a region missing from `i
 a clear error rather than silently misaligning).
 
 ```bash
-python scripts/run_one.py --dataset dc_house --model gcn_tcn --window w6_h6 \
+python scripts/run_one.py --dataset dc_house --model gcn_tcn --seq-len 6 --label-len 3 --pred-len 6 \
   --set graph.path=data/dc_house_graph.npz
 ```
 

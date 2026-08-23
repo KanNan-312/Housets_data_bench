@@ -32,6 +32,11 @@ def make_window_spec(
     return WindowSpec(seq_len=seq_len, label_len=label_len, pred_len=pred_len, test_stride=test_stride)
 
 
+def window_label(spec: WindowSpec) -> str:
+    """Short label for run-dir naming / reporting, e.g. ``w12_h6``."""
+    return f"w{spec.seq_len}_h{spec.pred_len}"
+
+
 def generate_window_indices(
     *,
     values: np.ndarray,

@@ -39,6 +39,22 @@ def normalize_adj_sym(A: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     return torch.sparse_coo_tensor(idx, val, size=A.shape).coalesce()
 
 
+def normalize_adj_random_walk(A: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """Row-normalized random-walk adjacency: ``D^-1 A``.
+
+    Used for diffusion convolution (e.g. DCRNN/D2STGNN), where the forward and
+    backward diffusion processes are the row-normalized walk on ``A`` and on
+    ``A.T`` respectively — pass the transpose in separately for the backward
+    direction.
+    """
+    A = A.coalesce()
+    deg = torch.sparse.sum(A, dim=1).to_dense()
+    deg_inv = deg.clamp_min(eps).pow(-1.0)
+    idx = A.indices()
+    val = A.values() * deg_inv[idx[0]]
+    return torch.sparse_coo_tensor(idx, val, size=A.shape).coalesce()
+
+
 def spmm_nt(A: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     # X_flat: [N, B*T*C]
     B, T, N, C = X.shape

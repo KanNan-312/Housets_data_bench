@@ -30,6 +30,19 @@ from .gnn.gnn_forecaster import (  # noqa: F401
     STLLMPlusForecaster,
 )
 
+# graph neural network baselines — traffic
+from .gnn.dcrnn import DCRNNForecaster  # noqa: F401
+from .gnn.stgformer import STGformerForecaster  # noqa: F401
+from .gnn.d2stgnn import D2STGNNForecaster  # noqa: F401
+
+# graph neural network baselines — crime (simplified adaptations, see module docstrings)
+from .gnn.aist import AISTForecaster  # noqa: F401
+from .gnn.st_hhol import STHHOLForecaster  # noqa: F401
+
+# graph neural network baselines — explainability / causal
+from .gnn.cast import CaSTForecaster  # noqa: F401
+from .gnn.stexplainer import STExplainerForecaster  # noqa: F401
+
 # optional foundation-model wrappers
 from .foundation.timesfm import TimesFMZeroForecaster, TimesFMCalibratedForecaster, TimesFMFullFineTuneForecaster  
 from .foundation.chronos import ChronosZeroForecaster, ChronosCalibratedForecaster, ChronosFullFineTuneForecaster 

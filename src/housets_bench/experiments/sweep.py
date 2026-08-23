@@ -12,7 +12,7 @@ from housets_bench.bundles import build_proc_bundle
 from housets_bench.bundles.datatypes import ProcBundle
 from housets_bench.data.io import AlignedData, load_aligned, subsample_zips
 from housets_bench.data.split import make_split
-from housets_bench.data.windowing import make_window_spec, WindowSpec
+from housets_bench.data.windowing import make_window_spec, window_label, WindowSpec
 from housets_bench.graph.loader import GraphConfig
 from housets_bench.metrics.evaluator import evaluate_forecaster
 from housets_bench.metrics.loss import evaluate_mse_loss, extract_train_history, sync_device
@@ -308,7 +308,7 @@ def run_one_cfg(
     out: Dict[str, Any] = {
         "model": model_name,
         "task": (cfg.get("task", {}) or {}).get("name"),
-        "window": (cfg.get("window", {}) or {}).get("name"),
+        "window": window_label(bundle.raw.spec),
         "pipeline": bundle.pipeline.summary(),
         "val": asdict(val),
         "test": asdict(test),

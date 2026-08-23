@@ -5,10 +5,10 @@
 ```
 Housets_data_bench/
 ├── configs/                  # YAML config fragments
-│   ├── default.yaml          # base defaults (split ratios, transforms, dataloader)
-│   ├── dataset/               # one file per dataset (path, id/time/target/feature cols, graph)
+│   ├── default.yaml          # base defaults (split ratios, window shape, transforms, dataloader)
+│   ├── dataset/               # one file per dataset (path, id/time/target/feature cols, graph,
+│   │                          #  optionally its own window:/split: overrides)
 │   ├── task/                  # univariate.yaml / multivariate.yaml  (features_mode)
-│   ├── windows/                # w6_h3.yaml … w12_h12.yaml  (seq_len, label_len, pred_len)
 │   └── models/                  # one file per model  (model.name, model.hparams)
 ├── scripts/
 │   ├── run_one.py             # ← main entry point
@@ -32,15 +32,21 @@ Housets_data_bench/
 
 ```
 run_one.py
-  parse_args()          # --dataset, --task, --window, --model, --device, --test-stride, --test-cutoff-date, --set …
-  load + deep_update    # merge default.yaml → dataset → task → window → model configs
+  parse_args()          # --dataset, --task, --model, --device,
+                         # --seq-len/--label-len/--pred-len/--test-stride/--train-ratio/--val-ratio/--test-cutoff-date, --set …
+  load + deep_update    # merge default.yaml → dataset → task → model configs
+  apply CLI overrides   # only for flags explicitly passed — YAML config is the source of truth otherwise
   run_one_cfg(cfg)      # ← all real work happens here  (experiments/sweep.py)
-  make_run_dir()        # runs/<dataset>/<model>__<task>__<window>/
+  make_run_dir()        # runs/<dataset>/<model>__<task>__<window>/  (<window> derived from effective seq_len/pred_len)
   save_yaml / save_json # config.yaml, metrics.json, env.json
   print JSON result
 ```
 
 `--set key=value` can override any nested config key at the CLI (e.g. `--set graph.path=data/g.npz`).
+There is no fixed window-preset file anymore: `window.seq_len`/`label_len`/`pred_len`/`test_stride`
+and `split.train_ratio`/`val_ratio`/`test_start_date` live in `configs/default.yaml` (or a
+per-dataset override in `configs/dataset/<name>.yaml`), and the CLI flags above only override
+them when explicitly passed.
 
 ---
 
@@ -49,10 +55,10 @@ run_one.py
 Configs are plain YAML dicts that are **deep-merged** in this order:
 
 ```
-configs/default.yaml           (baseline settings: split, dataloader, transforms, run)
-configs/dataset/<dataset>.yaml (data.* — path/id/time/target/feature cols; graph.*)
+configs/default.yaml           (baseline settings: split, window, dataloader, transforms, run)
+configs/dataset/<dataset>.yaml (data.* — path/id/time/target/feature cols; graph.*;
+                                 optionally its own window.*/split.* overrides)
 configs/task/<task>.yaml       (sets task.features_mode: S / MS)
-configs/windows/<window>.yaml  (sets window.seq_len, pred_len, label_len, test_stride)
 configs/models/<model>.yaml    (sets model.name, model.hparams.*)
 ```
 
