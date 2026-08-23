@@ -308,26 +308,24 @@ instance, in raw target units:
 python scripts/build_case_library.py \
   --runs-root runs/dc_house \
   --models dlinear patchtst gcn_tcn stgformer \
-  --out runs/dc_house/case_library.csv
+  --out-dir runs/dc_house/case_library
 ```
 
-Three CSVs are written, each derived from the one before it:
+Two CSVs are written under `--out-dir`:
 
-1. **`<out>_detail.csv`** — one row per (model, instance, horizon step):
+1. **`case_library_detail.csv`** — one row per (model, instance):
    `model, model_category, split, region_id, lookback_start, forecast_start,
-   forecast_end, step_ahead, target_date, y_true_raw, y_pred_raw,
-   abs_error_raw`. The actual forecasted and true values, in raw target
-   units — computed once, directly from each model's predictions, before any
-   summarization. This is the source of truth everything else is aggregated
-   from; skip it with `--no-detail` if you only want the summary (it's the
-   largest of the three — one row per horizon step, not per instance).
-2. **`--out-long`** (optional) — one row per (model, instance): `mae, rmse`
-   aggregated over the horizon, no per-step values.
-3. **`--out`** — the case library summary: one row per instance, the winning
-   model only — `region_id, lookback_start, forecast_start, forecast_end,
-   model_best, model_best_mae, model_best_rmse, model_best_category`
-   (category is `spatial_temporal` / `DL` / `foundation`, or `other` for
-   statistical/ML baselines).
+   forecast_end, mse, mae, rmse, y_true_raw, y_pred_raw`. `mse`/`mae`/`rmse`
+   are over the whole forecast window (raw target units); `y_true_raw` and
+   `y_pred_raw` hold that window's actual true and forecasted values, one
+   value per horizon step, pipe-joined into a single cell (e.g.
+   `412000.0000|418500.0000|421000.0000`). Computed first, directly from each
+   model's predictions.
+2. **`case_library.csv`** — the summary: one row per instance, the winning
+   model only (lowest mae) — `region_id, lookback_start, forecast_start,
+   forecast_end, model_best, model_best_mae, model_best_rmse,
+   model_best_category` (category is `spatial_temporal` / `DL` / `foundation`,
+   or `other` for statistical/ML baselines) — derived from the detail table.
 
 It reuses each run's own saved checkpoint (no retraining — except models with
 no train-dependent state, like `timesfm_zero`/`chronos2_zero`, which run

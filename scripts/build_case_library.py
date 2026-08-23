@@ -5,20 +5,19 @@ checkpoint, score every (region, lookback/forecast window) instance across
 the full train+val+test span in raw target units, and record which model
 wins each instance.
 
-Three tables are produced, computed in this order (each derived from the one
-before it):
-  1. detail  — one row per (model, instance, horizon step): the actual
-     forecasted value, the true value, and that step's absolute error.
-  2. long    — one row per (model, instance): mae/rmse aggregated over the
-     horizon (derived from detail).
-  3. summary — one row per instance: the winning model only (derived from long).
+Two files are written under --out-dir:
+  - case_library_detail.csv — one row per (model, instance): mse/mae/rmse
+    over the whole forecast window, plus the raw forecasted and true values
+    for that window, each pipe-joined into a single cell.
+  - case_library.csv — one row per instance: the winning model only
+    (derived from the detail table).
 
 Usage
 -----
     python scripts/build_case_library.py \
       --runs-root runs/dc_house \
       --models dlinear patchtst gcn_tcn stgformer \
-      --out runs/dc_house/case_library.csv
+      --out-dir runs/dc_house/case_library
 
 Omit --models to include every run found directly under --runs-root (each
 subdirectory containing a config.yaml, and a checkpoint.pt unless the model
@@ -40,9 +39,6 @@ from housets_bench.case_library import build_case_library
 from housets_bench.utils.config import load_yaml
 
 
-MODELS = ["timesfm_zero", "chronos2_zero", "dlinear", "itransformer", "patchtst", "timemixer",
-          "stgcn", "dcrnn", "d2stgnn", "graph_wavenet", "stgformer"]
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--runs-root", type=str, required=True,
@@ -51,16 +47,8 @@ def parse_args() -> argparse.Namespace:
                    help="model names to include (matches config.yaml's model.name); omit for all runs found")
     p.add_argument("--device", type=str, default=None, help="e.g. cuda, cpu (default: each run's own config)")
     p.add_argument("--max-eval-batches", type=int, default=None, help="cap batches per split per run (debugging)")
-    p.add_argument("--out", type=str, required=True, help="output CSV path for the case library summary")
-    p.add_argument("--out-detail", type=str, default=None,
-                   help="CSV path for the per-instance-per-model forecasted values + error "
-                   "(default: <out>_detail.csv next to --out)")
-    p.add_argument("--out-long", type=str, default=None,
-                   help="optional CSV path for the long table (mae/rmse per model per instance, "
-                   "no per-step values)")
-    p.add_argument("--no-detail", action="store_true",
-                   help="skip writing the detail table (it can be large: one row per model per "
-                   "instance per horizon step)")
+    p.add_argument("--out-dir", type=str, required=True,
+                   help="output folder — case_library.csv and case_library_detail.csv are written here")
     return p.parse_args()
 
 
@@ -72,7 +60,6 @@ def _discover_run_dirs(runs_root: Path, models: Optional[List[str]]) -> List[Pat
         child for child in sorted(runs_root.iterdir())
         if child.is_dir() and (child / "config.yaml").exists()
     ]
-
     if not candidates:
         raise SystemExit(f"No run directories with config.yaml found under {runs_root}")
 
@@ -100,36 +87,26 @@ def main() -> None:
     if not runs_root.is_dir():
         raise SystemExit(f"--runs-root not found or not a directory: {runs_root}")
 
-    # run_dirs = _discover_run_dirs(runs_root, args.models)
-    run_dirs = _discover_run_dirs(runs_root, MODELS)
+    run_dirs = _discover_run_dirs(runs_root, args.models)
+    print(f"Found {len(run_dirs)} run(s):")
     for r in run_dirs:
         print(f"  {r}")
 
     device = torch.device(args.device) if args.device else None
-    case_library_df, long_df, detail_df = build_case_library(
+    case_library_df, detail_df = build_case_library(
         run_dirs, device=device, max_batches=args.max_eval_batches, verbose=True
     )
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.no_detail:
-        out_detail_path = (
-            Path(args.out_detail) if args.out_detail
-            else out_path.with_name(f"{out_path.stem}_detail{out_path.suffix}")
-        )
-        out_detail_path.parent.mkdir(parents=True, exist_ok=True)
-        detail_df.to_csv(out_detail_path, index=False)
-        print(f"Saved detail table ({len(detail_df)} rows: forecasted + true values, per model per instance per step) -> {out_detail_path}")
+    detail_path = out_dir / "case_library_detail.csv"
+    detail_df.to_csv(detail_path, index=False)
+    print(f"Saved detail table ({len(detail_df)} rows: one per model per instance) -> {detail_path}")
 
-    if args.out_long:
-        out_long_path = Path(args.out_long)
-        out_long_path.parent.mkdir(parents=True, exist_ok=True)
-        long_df.to_csv(out_long_path, index=False)
-        print(f"Saved long table ({len(long_df)} rows) -> {out_long_path}")
-
-    case_library_df.to_csv(out_path, index=False)
-    print(f"Saved case library summary ({len(case_library_df)} instances) -> {out_path}")
+    summary_path = out_dir / "case_library.csv"
+    case_library_df.to_csv(summary_path, index=False)
+    print(f"Saved case library summary ({len(case_library_df)} instances) -> {summary_path}")
 
 
 if __name__ == "__main__":

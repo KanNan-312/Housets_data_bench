@@ -3,6 +3,12 @@ compute each model's error on every (region, lookback/forecast window)
 instance across the full train+val+test span, and record the best model per
 instance.
 
+The detail table is one row per (model, instance): mse/mae/rmse over the
+whole forecast window (raw target units), plus the raw forecasted and true
+values for that window each pipe-joined into a single cell (one value per
+horizon step). The case-library summary (best model per instance) is derived
+from it.
+
 Each run directory is loaded independently via
 :func:`housets_bench.experiments.run_loader.load_run` (its own saved
 ``config.yaml`` + ``checkpoint.pt``) — models can use different transform
@@ -95,24 +101,15 @@ DETAIL_COLUMNS = [
     "lookback_start",
     "forecast_start",
     "forecast_end",
-    "step_ahead",
-    "target_date",
-    "y_true_raw",
-    "y_pred_raw",
-    "abs_error_raw",
-]
-
-LONG_COLUMNS = [
-    "model",
-    "model_category",
-    "split",
-    "region_id",
-    "lookback_start",
-    "forecast_start",
-    "forecast_end",
+    "mse",
     "mae",
     "rmse",
+    "y_true_raw",
+    "y_pred_raw",
 ]
+
+# separator for the pipe-joined per-horizon-step value cells (y_true_raw / y_pred_raw)
+_VALUE_SEP = "|"
 
 _DATA_KEYS = ["path", "id_col", "time_col", "target_col", "feature_cols", "n_zip"]
 _WINDOW_KEYS = ["seq_len", "label_len", "pred_len"]
@@ -157,12 +154,7 @@ def _iter_instance_forecasts(
     device: Optional[torch.device],
     max_batches: Optional[int],
 ) -> Iterator[Tuple[Dict[str, Any], np.ndarray, np.ndarray]]:
-    """Yield (meta, y_true_raw[H], y_pred_raw[H]) for every instance in ``split``.
-
-    ``meta`` includes ``forecast_dates`` (length-H list) alongside the usual
-    region_id/lookback_start/forecast_start/forecast_end, so callers can build
-    the full per-step detail table without re-running the model.
-    """
+    """Yield (meta, y_true_raw[H], y_pred_raw[H]) for every instance in ``split``."""
     pred_len = int(bundle.raw.spec.pred_len)
     seq_len = int(bundle.raw.spec.seq_len)
     dates = bundle.raw.aligned.dates
@@ -170,13 +162,12 @@ def _iter_instance_forecasts(
     n_dates = len(dates)
 
     def _meta(region_id: str, t0: int, t_pred_start: int) -> Dict[str, Any]:
-        forecast_dates = [dates[min(t_pred_start + h, n_dates - 1)] for h in range(pred_len)]
+        end_idx = min(t_pred_start + pred_len - 1, n_dates - 1)
         return {
             "region_id": region_id,
             "lookback_start": dates[t0],
-            "forecast_start": forecast_dates[0],
-            "forecast_end": forecast_dates[-1],
-            "forecast_dates": forecast_dates,
+            "forecast_start": dates[t_pred_start],
+            "forecast_end": dates[end_idx],
         }
 
     graph_dls = getattr(model, "_graph_dataloaders", None)
@@ -217,25 +208,17 @@ def _iter_instance_forecasts(
                 yield _meta(meta["zipcode"], t0, t_pred_start), t_raw[i], p_raw[i]
 
 
-def _aggregate_long(detail_df: pd.DataFrame) -> pd.DataFrame:
-    """Collapse the per-step detail table to one row per (model, instance): mae/rmse."""
+def _join_values(arr: np.ndarray) -> str:
+    return _VALUE_SEP.join(f"{float(v):.4f}" for v in arr)
+
+
+def _pick_best(detail_df: pd.DataFrame) -> pd.DataFrame:
     if detail_df.empty:
-        return pd.DataFrame(columns=LONG_COLUMNS)
-
-    group_cols = ["model", "model_category", "split", "region_id", "lookback_start", "forecast_start", "forecast_end"]
-    grouped = detail_df.groupby(group_cols)["abs_error_raw"]
-    mae = grouped.mean()
-    rmse = grouped.apply(lambda s: float(np.sqrt(np.mean(np.square(s)))))
-    return pd.DataFrame({"mae": mae, "rmse": rmse}).reset_index()[LONG_COLUMNS]
-
-
-def _pick_best(long_df: pd.DataFrame) -> pd.DataFrame:
-    if long_df.empty:
         return pd.DataFrame(columns=CASE_LIBRARY_COLUMNS)
 
     group_cols = ["region_id", "lookback_start", "forecast_start", "forecast_end"]
-    idx = long_df.groupby(group_cols)["mae"].idxmin()
-    best = long_df.loc[idx].rename(
+    idx = detail_df.groupby(group_cols)["mae"].idxmin()
+    best = detail_df.loc[idx].rename(
         columns={
             "model": "model_best",
             "mae": "model_best_mae",
@@ -252,18 +235,18 @@ def build_case_library(
     device: Optional[torch.device] = None,
     max_batches: Optional[int] = None,
     verbose: bool = True,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Build the per-instance case library across ``run_dirs``.
 
-    Returns ``(case_library_df, long_df, detail_df)``:
-      - ``detail_df``: the finest-grained table — one row per (model,
-        instance, horizon step), with the actual forecasted and true values
-        (raw target units) and that step's absolute error. Computed first,
-        directly from each model's predictions, before any summarization.
-      - ``long_df``: one row per (model, instance) — mae/rmse aggregated over
-        the horizon, derived from ``detail_df``.
+    Returns ``(case_library_df, detail_df)``:
+      - ``detail_df``: one row per (model, instance) — ``mse``/``mae``/``rmse``
+        over the whole forecast window (raw target units), plus the actual
+        raw forecasted and true values for that window, each pipe-joined
+        (one step per ``|``-separated value) into a single cell. Computed
+        first, directly from each model's predictions.
       - ``case_library_df``: the requested 8-column table — one row per
-        instance, the winning model only — derived from ``long_df``.
+        instance, the winning model only (by lowest mae) — derived from
+        ``detail_df``.
     """
     run_dirs = [Path(r) for r in run_dirs]
     if not run_dirs:
@@ -292,26 +275,24 @@ def build_case_library(
             for meta, y_true_raw, y_pred_raw in _iter_instance_forecasts(
                 model, bundle, split, device=device, max_batches=max_batches
             ):
-                forecast_dates = meta["forecast_dates"]
-                for h, target_date in enumerate(forecast_dates):
-                    yt = float(y_true_raw[h])
-                    yp = float(y_pred_raw[h])
-                    detail_records.append(
-                        {
-                            "model": model_name,
-                            "model_category": category,
-                            "split": split,
-                            "region_id": meta["region_id"],
-                            "lookback_start": meta["lookback_start"],
-                            "forecast_start": meta["forecast_start"],
-                            "forecast_end": meta["forecast_end"],
-                            "step_ahead": h + 1,
-                            "target_date": target_date,
-                            "y_true_raw": yt,
-                            "y_pred_raw": yp,
-                            "abs_error_raw": abs(yp - yt),
-                        }
-                    )
+                diff = y_pred_raw - y_true_raw
+                mse = float(np.mean(np.square(diff)))
+                detail_records.append(
+                    {
+                        "model": model_name,
+                        "model_category": category,
+                        "split": split,
+                        "region_id": meta["region_id"],
+                        "lookback_start": meta["lookback_start"],
+                        "forecast_start": meta["forecast_start"],
+                        "forecast_end": meta["forecast_end"],
+                        "mse": mse,
+                        "mae": float(np.mean(np.abs(diff))),
+                        "rmse": float(np.sqrt(mse)),
+                        "y_true_raw": _join_values(y_true_raw),
+                        "y_pred_raw": _join_values(y_pred_raw),
+                    }
+                )
                 n_instances += 1
         if verbose:
             print(f"[case_library]   {n_instances} instances scored")
@@ -319,15 +300,14 @@ def build_case_library(
     detail_df = pd.DataFrame.from_records(detail_records)
     if not detail_df.empty:
         detail_df = detail_df[DETAIL_COLUMNS]
-    long_df = _aggregate_long(detail_df)
-    case_library_df = _pick_best(long_df)
+    case_library_df = _pick_best(detail_df)
 
     if verbose:
-        n_models = long_df["model"].nunique() if not long_df.empty else 0
+        n_models = detail_df["model"].nunique() if not detail_df.empty else 0
         n_instances_total = len(case_library_df)
         print(f"[case_library] {n_instances_total} instances, {n_models} models compared")
         if not case_library_df.empty:
             print("[case_library] win counts:")
             print(case_library_df["model_best"].value_counts().to_string())
 
-    return case_library_df, long_df, detail_df
+    return case_library_df, detail_df
