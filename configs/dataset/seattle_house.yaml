@@ -2,15 +2,15 @@
 # Not usable until that file is present locally — see README.md for the
 # download link. Adjust feature_cols/drop_cols once the file is in place.
 dataset:
-  name: housets
+  name: seattle_house
 
 data:
-  path: data/raw/HouseTS.csv
+  path: data/seattle_house/Seattle_House.csv
   id_col: zipcode
   time_col: date
-  target_col: price
-  feature_cols: null   # null => auto-infer all numeric columns (safe default; narrow this once you know the schema)
-  drop_cols: [city, city_full, metro, state, latitude, longitude]
+  target_col: median_sale_price
+  feature_cols: [homes_sold, median_days_on_market, new_listings, active_listings, pending_sales, inventory, average_sale_to_list_ratio, median_new_listing_price]   # null => auto-infer all numeric columns (safe default; narrow this once you know the schema)
+  drop_cols: [metro, latitude, longitude]
   freq: M   # monthly
   impute: true
   n_zip: 0
@@ -19,4 +19,4 @@ graph:
   # path to a graph.npz file with 'A' ([N,N] adjacency matrix) and 'ids'
   # (length-N array of region ids giving A's row/col order) — required by GNN
   # models. See scripts/build_knn_graph.py for a standalone builder.
-  path: null
+  path: data/seattle_house/graph.npz

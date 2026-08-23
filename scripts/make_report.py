@@ -16,7 +16,7 @@ DEFAULT_WINDOWS = ["w6_h3", "w6_h6", "w6_h12", "w12_h3", "w12_h6", "w12_h12"]
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--runs", type=str, default=str(REPO_ROOT / "runs" / "section4_sweep"))
-    p.add_argument("--out", type=str, default=str(REPO_ROOT / "reports" / "section4_sweep"))
+    p.add_argument("--out", type=str, default=str(REPO_ROOT / "runs" / "section4_sweep" / "reports"))
     return p.parse_args()
 
 

@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--model",
         type=str,
-        default="xgb",
+        default="stsgcn",
         help="model config name under configs/models",
     )
 
@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--test-stride",
         type=int,
-        default=None,
+        default=6,
         help="stride between consecutive test windows (>1 strides through the test set instead of "
         "sliding one step at a time, to cut evaluation cost); default from window config is 1",
     )
