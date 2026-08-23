@@ -67,6 +67,8 @@ class GraphWindowDataset(Dataset):
         # of every consecutive t0, to cut evaluation cost on expensive models.
         stride = bundle.raw.spec.test_stride if split == "test" else 1
         self._time_anchors: List[int] = list(range(t0_start, t0_end + 1, stride))
+        self.time_anchors = self._time_anchors  # public alias — callers building
+        # per-instance metadata (e.g. the case-library builder) index t0 by dataset position
         self._seq_len = seq_len
         self._pred_len = pred_len
 

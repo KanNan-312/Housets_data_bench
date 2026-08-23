@@ -296,6 +296,50 @@ time step.
 
 ---
 
+## Case library: per-instance best model + neighbor explainability
+
+Once you have trained checkpoints under `runs/`, `scripts/build_case_library.py`
+scores every already-trained model on **every** (region, lookback/forecast
+window) instance across the full train+val+test span — not just the
+aggregate metrics in `metrics.json` — and records which model wins each
+instance, in raw target units:
+
+```bash
+python scripts/build_case_library.py \
+  --runs-root runs/dc_house \
+  --models dlinear patchtst gcn_tcn stgformer \
+  --out runs/dc_house/case_library.csv
+```
+
+Output columns: `region_id, lookback_start, forecast_start, forecast_end,
+model_best, model_best_mae, model_best_rmse, model_best_category` (category
+is `spatial_temporal` / `DL` / `foundation`, or `other` for statistical/ML
+baselines). It reuses each run's own saved checkpoint (no retraining) and
+evaluates with `window.test_stride` forced to `1` regardless of what the run
+was trained with, since the stride exists only to cut normal benchmark
+evaluation cost, not for this exhaustive per-instance comparison — so this
+can be considerably slower than a normal `run_one.py` evaluation. All runs
+passed together must share the same dataset, window shape, and split
+boundaries (validated up front, with a clear error listing any mismatch).
+
+For a spatiotemporal (GNN) model, `scripts/explain_instance.py` gives an
+on-demand, model-agnostic breakdown of which neighbor regions contributed to
+one instance's forecast, via occlusion (zero a neighbor's input features,
+rerun the forward pass, measure how much the target's forecast moves):
+
+```bash
+python scripts/explain_instance.py \
+  --run-dir runs/dc_house/stgformer__multivariate__w6_h3 \
+  --region 20001 --lookback-start 2021-06-01 --device cpu
+```
+
+Prints each neighbor region's contribution as a percentage (plus the raw MAE
+delta), including a `self` row for how much the target region relies on its
+own history vs. its neighbors. This works identically across every
+spatiotemporal model in the registry, not just ones with built-in attention.
+
+---
+
 ## Data Usage and Attribution
 
 HouseTS integrates or aligns signals derived from several public data sources, including:

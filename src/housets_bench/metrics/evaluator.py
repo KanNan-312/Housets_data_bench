@@ -20,6 +20,61 @@ def _to_numpy(x: Any) -> np.ndarray:
     return np.asarray(x)
 
 
+def _bundle_target_indices(bundle: ProcBundle):
+    proc_names = list(bundle.aligned_proc.schema.continuous_cols)
+    name_to_idx = {n: i for i, n in enumerate(proc_names)}
+    y_idx_full = [name_to_idx[n] for n in bundle.y_cols]
+    d_proc = int(bundle.aligned_proc.values.shape[-1])
+    raw_target_index = int(bundle.raw_target_index)
+    return y_idx_full, d_proc, raw_target_index
+
+
+def invert_to_raw(bundle: ProcBundle, y_true_proc: Any, y_pred_proc: Any):
+    """Invert processed-space ``[B,H,Dy]`` tensors to raw target-space ``[B,H]`` arrays.
+
+    Pipeline-agnostic: fully un-does whatever transform stages (log/clip/
+    zscore/pca) the bundle's pipeline applied, then reads back just the raw
+    target column. Shared by :class:`StreamingEvaluator` and
+    :func:`per_sample_errors` so both report errors in the same raw units.
+    """
+    yt = _to_numpy(y_true_proc).astype(np.float32)
+    yp = _to_numpy(y_pred_proc).astype(np.float32)
+
+    if yt.shape != yp.shape:
+        raise ValueError(f"Shape mismatch: y_true {yt.shape} vs y_pred {yp.shape}")
+    if yt.ndim != 3:
+        raise ValueError(f"Expected [B,H,Dy], got {yt.shape}")
+
+    B, H, Dy = yt.shape
+    y_idx_full, d_proc, raw_target_index = _bundle_target_indices(bundle)
+
+    full_t = np.zeros((B, H, d_proc), dtype=np.float32)
+    full_p = np.zeros((B, H, d_proc), dtype=np.float32)
+    full_t[:, :, y_idx_full] = yt
+    full_p[:, :, y_idx_full] = yp
+
+    # Fully invert the pipeline → raw price space (pipeline-agnostic)
+    t_raw_full = bundle.pipeline.inverse(full_t, keep_log=False)
+    p_raw_full = bundle.pipeline.inverse(full_p, keep_log=False)
+    t_raw = t_raw_full[:, :, raw_target_index].astype(np.float64)
+    p_raw = p_raw_full[:, :, raw_target_index].astype(np.float64)
+    return t_raw, p_raw
+
+
+def per_sample_errors(bundle: ProcBundle, y_true_proc: Any, y_pred_proc: Any):
+    """Per-row MAE and RMSE in raw target units, averaged over the horizon axis.
+
+    Returns ``(mae[B], rmse[B])``. Used by the case-library builder, which
+    needs one error value per (region, window) instance rather than the
+    dataset-wide aggregate :class:`StreamingEvaluator` produces.
+    """
+    t_raw, p_raw = invert_to_raw(bundle, y_true_proc, y_pred_proc)
+    diff = p_raw - t_raw  # [B, H]
+    mae = np.mean(np.abs(diff), axis=1)
+    rmse = np.sqrt(np.mean(diff * diff, axis=1))
+    return mae, rmse
+
+
 @dataclass
 class EvalResult:
     log_rmse: float   # RMSE(log1p(p_raw), log1p(t_raw))
@@ -47,13 +102,6 @@ class StreamingEvaluator:
         self.bundle = bundle
         self.eps = float(eps)
 
-        proc_names = list(bundle.aligned_proc.schema.continuous_cols)
-        name_to_idx = {n: i for i, n in enumerate(proc_names)}
-        self.y_idx_full = [name_to_idx[n] for n in bundle.y_cols]
-
-        self.d_proc = int(bundle.aligned_proc.values.shape[-1])
-        self.raw_target_index = int(bundle.raw_target_index)
-
         self._sse_log = 0.0
         self._sse_raw = 0.0
         self._sum_ape = 0.0
@@ -62,26 +110,7 @@ class StreamingEvaluator:
         self._n = 0
 
     def update(self, y_true_proc: Any, y_pred_proc: Any) -> None:
-        yt = _to_numpy(y_true_proc).astype(np.float32)
-        yp = _to_numpy(y_pred_proc).astype(np.float32)
-
-        if yt.shape != yp.shape:
-            raise ValueError(f"Shape mismatch: y_true {yt.shape} vs y_pred {yp.shape}")
-        if yt.ndim != 3:
-            raise ValueError(f"Expected [B,H,Dy], got {yt.shape}")
-
-        B, H, Dy = yt.shape
-
-        full_t = np.zeros((B, H, self.d_proc), dtype=np.float32)
-        full_p = np.zeros((B, H, self.d_proc), dtype=np.float32)
-        full_t[:, :, self.y_idx_full] = yt
-        full_p[:, :, self.y_idx_full] = yp
-
-        # Fully invert the pipeline → raw price space (pipeline-agnostic)
-        t_raw_full = self.bundle.pipeline.inverse(full_t, keep_log=False)
-        p_raw_full = self.bundle.pipeline.inverse(full_p, keep_log=False)
-        t_raw = t_raw_full[:, :, self.raw_target_index].astype(np.float64)
-        p_raw = p_raw_full[:, :, self.raw_target_index].astype(np.float64)
+        t_raw, p_raw = invert_to_raw(self.bundle, y_true_proc, y_pred_proc)
 
         # log space (clamp to ≥0 before log1p to guard float precision)
         t_log = np.log1p(np.maximum(t_raw, 0.0))

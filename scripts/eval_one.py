@@ -17,7 +17,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -25,14 +25,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 import torch
 
 from housets_bench.experiments.artifacts import save_json
-from housets_bench.experiments.sweep import build_bundle_from_cfg, apply_hparams
-from housets_bench.data.io import load_aligned, subsample_zips
+from housets_bench.experiments.run_loader import load_run
 from housets_bench.data.windowing import window_label
 from housets_bench.metrics.evaluator import evaluate_forecaster
-from housets_bench.models.registry import get as get_model
-from housets_bench.utils.config import load_yaml, resolve_relpaths
-
-import housets_bench.models  # ensure all models are registered
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,56 +49,24 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir).resolve()
-
-    config_path = run_dir / "config.yaml"
     checkpoint_path = run_dir / "checkpoint.pt"
 
-    if not config_path.exists():
-        raise SystemExit(f"config.yaml not found in {run_dir}")
+    if checkpoint_path.exists():
+        print(f"Loading checkpoint: {checkpoint_path}")
+    else:
+        print(f"[warn] No checkpoint.pt found in {run_dir}. Evaluating without loading weights.")
 
-    cfg: Dict[str, Any] = load_yaml(config_path)
-    resolve_relpaths(cfg, root=REPO_ROOT, keys=["data.path", "graph.path"])
+    device_str = args.device
+    dev = torch.device(device_str) if device_str else None
 
-    # device
-    run_cfg = cfg.get("run", {}) or {}
-    device_str = args.device or run_cfg.get("device", "cpu")
-    dev = torch.device(device_str)
+    model, bundle, cfg = load_run(run_dir, device=dev, require_checkpoint=False)
+    dev = dev if dev is not None else torch.device(str((cfg.get("run", {}) or {}).get("device", "cpu")))
 
     max_eval = args.max_eval_batches
     if max_eval is not None and max_eval <= 0:
         max_eval = None
 
-    # load data
-    data_cfg = cfg.get("data", {}) or {}
-    aligned = load_aligned(
-        data_cfg.get("path"),
-        target_col=str(data_cfg.get("target_col", "price")),
-        id_col=str(data_cfg.get("id_col", "zipcode")),
-        time_col=str(data_cfg.get("time_col", "date")),
-        drop_cols=data_cfg.get("drop_cols", ("city", "city_full", "metro")),
-        feature_cols=data_cfg.get("feature_cols"),
-        impute=bool(data_cfg.get("impute", True)),
-    )
-    n_zip = int(data_cfg.get("n_zip", 0) or 0)
-    aligned = subsample_zips(aligned, n_zip)
-
-    bundle = build_bundle_from_cfg(aligned=aligned, cfg=cfg)
-
-    # instantiate model + apply hparams
-    model_cfg = cfg.get("model", {}) or {}
-    model_name = str(model_cfg.get("name"))
-    model = get_model(model_name)
-    apply_hparams(model, model_cfg.get("hparams", {}) or {})
-
-    # load checkpoint (required for DL/GNN models; no-op for non-DL)
-    if checkpoint_path.exists():
-        print(f"Loading checkpoint: {checkpoint_path}")
-        model.load_checkpoint(checkpoint_path, device=dev)
-        # GNN models need graph dataloaders rebuilt from bundle after checkpoint load
-        if hasattr(model, "setup_graph_dataloaders"):
-            model.setup_graph_dataloaders(bundle)
-    else:
-        print(f"[warn] No checkpoint.pt found in {run_dir}. Evaluating without loading weights.")
+    model_name = str((cfg.get("model", {}) or {}).get("name"))
 
     # evaluate
     results: Dict[str, Any] = {
