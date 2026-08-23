@@ -46,12 +46,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def _discover_run_dirs(runs_root: Path, models: Optional[List[str]]) -> List[Path]:
+    # Only config.yaml is required here — checkpoint.pt may legitimately be
+    # missing for checkpoint_optional models (e.g. timesfm_zero, chronos2_zero),
+    # which load_run() handles by running fit() directly instead of erroring.
     candidates = [
         child for child in sorted(runs_root.iterdir())
-        if child.is_dir() and (child / "config.yaml").exists() and (child / "checkpoint.pt").exists()
+        if child.is_dir() and (child / "config.yaml").exists()
     ]
     if not candidates:
-        raise SystemExit(f"No run directories with config.yaml + checkpoint.pt found under {runs_root}")
+        raise SystemExit(f"No run directories with config.yaml found under {runs_root}")
 
     if models is None:
         return candidates

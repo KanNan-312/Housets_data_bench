@@ -291,6 +291,7 @@ class ChronosZeroForecaster(_ChronosBase):
     """Chronos zero-shot."""
 
     name: str = "chronos_zero"
+    checkpoint_optional: bool = True
 
     def __init__(
         self,
@@ -903,6 +904,7 @@ class Chronos2ZeroForecaster(_Chronos2Base):
     """Chronos-2 zero-shot."""
 
     name: str = "chronos2_zero"
+    checkpoint_optional: bool = True
 
     def __init__(
         self,

@@ -522,6 +522,7 @@ class TimesFMZeroForecaster(_TimesFMBase):
     """TimesFM zero-shot."""
 
     name: str = "timesfm_zero"
+    checkpoint_optional: bool = True
 
     def __init__(
         self,
@@ -559,6 +560,7 @@ class TimesFMXRegZeroForecaster(_TimesFMXRegBase):
     """TimesFM-XReg zero-shot (MS uses covariates)."""
 
     name: str = "timesfm_xreg_zero"
+    checkpoint_optional: bool = True
 
     def __init__(
         self,

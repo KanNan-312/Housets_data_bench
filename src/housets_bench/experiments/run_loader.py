@@ -73,6 +73,12 @@ def load_run(
         model.load_checkpoint(checkpoint_path, device=dev)
         if hasattr(model, "setup_graph_dataloaders"):
             model.setup_graph_dataloaders(bundle)
+    elif getattr(model, "checkpoint_optional", False):
+        # No train-data-dependent fitted state (e.g. pure zero-shot foundation
+        # models) — fit() is just "load the pretrained weights", so there's
+        # nothing a missing checkpoint actually loses; run it directly instead
+        # of treating the missing file as an error.
+        model.fit(bundle, device=dev)
     elif require_checkpoint:
         raise FileNotFoundError(f"checkpoint.pt not found in {run_dir}")
 
