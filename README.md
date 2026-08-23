@@ -322,10 +322,11 @@ can be considerably slower than a normal `run_one.py` evaluation. All runs
 passed together must share the same dataset, window shape, and split
 boundaries (validated up front, with a clear error listing any mismatch).
 
-For a spatiotemporal (GNN) model, `scripts/explain_instance.py` gives an
-on-demand, model-agnostic breakdown of which neighbor regions contributed to
-one instance's forecast, via occlusion (zero a neighbor's input features,
-rerun the forward pass, measure how much the target's forecast moves):
+`scripts/explain_instance.py` gives an on-demand, model-agnostic breakdown of
+one instance's forecast, via occlusion (zero part of the input, rerun the
+forward pass, measure how much the target's forecast moves — under this
+benchmark's z-score transform, zeroing is approximately "replace with the
+average", not an implausible perturbation):
 
 ```bash
 python scripts/explain_instance.py \
@@ -333,10 +334,18 @@ python scripts/explain_instance.py \
   --region 20001 --lookback-start 2021-06-01 --device cpu
 ```
 
-Prints each neighbor region's contribution as a percentage (plus the raw MAE
-delta), including a `self` row for how much the target region relies on its
-own history vs. its neighbors. This works identically across every
-spatiotemporal model in the registry, not just ones with built-in attention.
+- **Feature contribution** (any model — GNN, DL, foundation, statistical/ML):
+  occludes one input variable at a time (own price history, homes_sold,
+  inventory, ...) for the target region and reports each one's share of the
+  forecast change.
+- **Neighbor contribution** (spatiotemporal/GNN models only, skipped
+  otherwise): occludes one neighbor region at a time and reports each one's
+  share, including a `self` row for how much the forecast relies on the
+  target region's own history vs. its neighbors.
+
+Both work identically across every model in the registry — not just ones
+with built-in attention — since they only call the public
+`model.predict_batch(...)` API.
 
 ---
 

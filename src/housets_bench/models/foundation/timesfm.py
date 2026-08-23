@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -309,6 +309,47 @@ class _TimesFMBase(BaseForecaster):
         scale, bias = fit_affine_calibrator(yhat_all, ytrue_all)
         self._calibrator = AffineCalibrator.from_numpy(scale, bias, device=self._device)
 
+    # ── checkpointing ────────────────────────────────────────────────────────
+    # TimesFM itself is a large frozen pretrained model re-downloaded from
+    # `repo_id` rather than duplicated into checkpoint.pt; only the small
+    # fitted state (calibrator + the bits needed to reconstruct predict_batch
+    # without re-running fit()) is persisted. BaseForecaster's default
+    # save/load only handles a populated `self._net`, which zero-shot and
+    # calibration-only forecasters never set — so without this override
+    # checkpoint.pt was silently never written at all.
+
+    def _checkpoint_state(self) -> Dict[str, Any]:
+        return {
+            "pred_len": self._pred_len,
+            "y2x_idx": self._y2x_idx,
+            "calibrator": self._calibrator,
+        }
+
+    def _restore_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        self._pred_len = state.get("pred_len")
+        self._y2x_idx = state.get("y2x_idx")
+        self._calibrator = state.get("calibrator")
+
+    def save_checkpoint(self, path: Union[str, Path]) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self._checkpoint_state(), p)
+
+    def load_checkpoint(self, path: Union[str, Path], *, device: Optional[torch.device] = None) -> None:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {p}")
+        state = torch.load(p, map_location=device or "cpu", weights_only=False)
+        self._restore_checkpoint_state(state)
+        self._device = device
+        if self._pred_len is not None:
+            self._tfm = _load_timesfm(
+                repo_id=self.repo_id,
+                pred_len=self._pred_len,
+                device=device,
+                infer_batch_size=self.infer_batch_size,
+            )
+
 
 class _TimesFMXRegBase(_TimesFMBase):
     """TimesFM-XReg wrapper .
@@ -365,6 +406,17 @@ class _TimesFMXRegBase(_TimesFMBase):
                     "TimesFM-XReg requested but your `timesfm` package has no forecast_with_covariates(). "
                     "Install XReg deps, e.g. `pip install 'timesfm[xreg]'` (and ensure jax/jaxlib)."
                 )
+
+    def _checkpoint_state(self) -> Dict[str, Any]:
+        state = super()._checkpoint_state()
+        state["cov_idx"] = self._cov_idx
+        state["cov_names"] = self._cov_names
+        return state
+
+    def _restore_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        super()._restore_checkpoint_state(state)
+        self._cov_idx = state.get("cov_idx")
+        self._cov_names = state.get("cov_names")
 
     def _extend_covar(self, ctx: np.ndarray, horizon: int) -> np.ndarray:
         ctx = np.asarray(ctx, dtype=np.float32).reshape(-1)
@@ -656,6 +708,16 @@ def _timesfm_forward_to_point(
 class TimesFMFullFineTuneForecaster(_TimesFMBase):
 
     name: str = "timesfm_full_ft"
+
+    # This variant gradient-fine-tunes real weights (unlike zero-shot/calibration
+    # variants), so _TimesFMBase's small calibrator-only checkpoint would be
+    # actively misleading here — it would silently omit the fine-tuned weights.
+    # Persisting the actual weights into the standard checkpoint.pt is a
+    # separate follow-up (today they're only saved if `ft_save_path` is set,
+    # via a side file outside the normal checkpoint mechanism); until then,
+    # keep the base no-op behavior rather than writing an incomplete file.
+    save_checkpoint = BaseForecaster.save_checkpoint
+    load_checkpoint = BaseForecaster.load_checkpoint
 
     def __init__(
         self,

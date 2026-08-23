@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -248,6 +248,43 @@ class _ChronosBase(BaseForecaster):
         scale, bias = fit_affine_calibrator(yhat_all, ytrue_all)
         self._calibrator = AffineCalibrator.from_numpy(scale, bias, device=self._device)
 
+    # ── checkpointing ────────────────────────────────────────────────────────
+    # Chronos itself is a large frozen pretrained model re-downloaded from
+    # `model_id` rather than duplicated into checkpoint.pt; only the small
+    # fitted state (calibrator + the bits needed to reconstruct predict_batch
+    # without re-running fit()) is persisted. BaseForecaster's default
+    # save/load only handles a populated `self._net`, which zero-shot and
+    # calibration-only forecasters never set — so without this override
+    # checkpoint.pt was silently never written at all.
+
+    def _checkpoint_state(self) -> Dict[str, Any]:
+        return {
+            "pred_len": self._pred_len,
+            "seq_len": self._seq_len,
+            "y2x_idx": self._y2x_idx,
+            "calibrator": self._calibrator,
+        }
+
+    def _restore_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        self._pred_len = state.get("pred_len")
+        self._seq_len = state.get("seq_len")
+        self._y2x_idx = state.get("y2x_idx")
+        self._calibrator = state.get("calibrator")
+
+    def save_checkpoint(self, path: Union[str, Path]) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self._checkpoint_state(), p)
+
+    def load_checkpoint(self, path: Union[str, Path], *, device: Optional[torch.device] = None) -> None:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {p}")
+        state = torch.load(p, map_location=device or "cpu", weights_only=False)
+        self._restore_checkpoint_state(state)
+        self._device = device
+        self._pipe = _load_chronos_pipeline(model_id=self.model_id, device=device)
+
 
 @register("chronos_zero")
 class ChronosZeroForecaster(_ChronosBase):
@@ -300,6 +337,16 @@ class ChronosFullFineTuneForecaster(_ChronosBase):
     """
 
     name: str = "chronos_full_ft"
+
+    # This variant gradient-fine-tunes real weights (unlike zero-shot/calibration
+    # variants), so _ChronosBase's small calibrator-only checkpoint would be
+    # actively misleading here — it would silently omit the fine-tuned weights.
+    # Persisting the actual weights into the standard checkpoint.pt is a
+    # separate follow-up (today they're only saved if `ft_save_path` is set,
+    # via a side file outside the normal checkpoint mechanism); until then,
+    # keep the base no-op behavior rather than writing an incomplete file.
+    save_checkpoint = BaseForecaster.save_checkpoint
+    load_checkpoint = BaseForecaster.load_checkpoint
 
     def __init__(
         self,
@@ -813,6 +860,43 @@ class _Chronos2Base(BaseForecaster):
         scale, bias = fit_affine_calibrator(yhat_all, ytrue_all)
         self._calibrator = AffineCalibrator.from_numpy(scale, bias, device=self._device)
 
+    # ── checkpointing ────────────────────────────────────────────────────────
+    # Same rationale as _ChronosBase: Chronos-2 is a large frozen pretrained
+    # pipeline re-downloaded from `model_id`, so only the small fitted state
+    # is persisted rather than duplicating it into checkpoint.pt.
+
+    def _checkpoint_state(self) -> Dict[str, Any]:
+        return {
+            "pred_len": self._pred_len,
+            "seq_len": self._seq_len,
+            "x_cols": self._x_cols,
+            "y_cols": self._y_cols,
+            "target_col": self._target_col,
+            "calibrator": self._calibrator,
+        }
+
+    def _restore_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        self._pred_len = state.get("pred_len")
+        self._seq_len = state.get("seq_len")
+        self._x_cols = state.get("x_cols")
+        self._y_cols = state.get("y_cols")
+        self._target_col = state.get("target_col")
+        self._calibrator = state.get("calibrator")
+
+    def save_checkpoint(self, path: Union[str, Path]) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self._checkpoint_state(), p)
+
+    def load_checkpoint(self, path: Union[str, Path], *, device: Optional[torch.device] = None) -> None:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {p}")
+        state = torch.load(p, map_location=device or "cpu", weights_only=False)
+        self._restore_checkpoint_state(state)
+        self._device = device
+        self._pipe = _load_chronos2_pipeline(model_id=self.model_id, device=device)
+
 
 @register("chronos2_zero")
 class Chronos2ZeroForecaster(_Chronos2Base):
@@ -867,6 +951,16 @@ class Chronos2FullFineTuneForecaster(_Chronos2Base):
     """Chronos-2 fine-tuning using Chronos2Pipeline.fit."""
 
     name: str = "chronos2_full_ft"
+
+    # This variant fine-tunes the pipeline itself (LoRA or full), unlike
+    # zero-shot/calibration variants, so _Chronos2Base's small calibrator-only
+    # checkpoint would be actively misleading here. The fine-tuned pipeline is
+    # only persisted if `ft_save` is set (via Chronos2Pipeline.save_pretrained,
+    # a directory rather than a single file — a structural mismatch with the
+    # standard single-file checkpoint.pt that needs its own follow-up); until
+    # then, keep the base no-op behavior rather than writing an incomplete file.
+    save_checkpoint = BaseForecaster.save_checkpoint
+    load_checkpoint = BaseForecaster.load_checkpoint
 
     def __init__(
         self,
