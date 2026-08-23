@@ -5,6 +5,14 @@ checkpoint, score every (region, lookback/forecast window) instance across
 the full train+val+test span in raw target units, and record which model
 wins each instance.
 
+Three tables are produced, computed in this order (each derived from the one
+before it):
+  1. detail  — one row per (model, instance, horizon step): the actual
+     forecasted value, the true value, and that step's absolute error.
+  2. long    — one row per (model, instance): mae/rmse aggregated over the
+     horizon (derived from detail).
+  3. summary — one row per instance: the winning model only (derived from long).
+
 Usage
 -----
     python scripts/build_case_library.py \
@@ -13,7 +21,8 @@ Usage
       --out runs/dc_house/case_library.csv
 
 Omit --models to include every run found directly under --runs-root (each
-subdirectory containing a config.yaml + checkpoint.pt).
+subdirectory containing a config.yaml, and a checkpoint.pt unless the model
+is checkpoint_optional, e.g. timesfm_zero/chronos2_zero).
 """
 from __future__ import annotations
 
@@ -39,9 +48,16 @@ def parse_args() -> argparse.Namespace:
                    help="model names to include (matches config.yaml's model.name); omit for all runs found")
     p.add_argument("--device", type=str, default=None, help="e.g. cuda, cpu (default: each run's own config)")
     p.add_argument("--max-eval-batches", type=int, default=None, help="cap batches per split per run (debugging)")
-    p.add_argument("--out", type=str, required=True, help="output CSV path for the case library")
+    p.add_argument("--out", type=str, required=True, help="output CSV path for the case library summary")
+    p.add_argument("--out-detail", type=str, default=None,
+                   help="CSV path for the per-instance-per-model forecasted values + error "
+                   "(default: <out>_detail.csv next to --out)")
     p.add_argument("--out-long", type=str, default=None,
-                   help="optional CSV path for the full per-model long table (every model x every instance)")
+                   help="optional CSV path for the long table (mae/rmse per model per instance, "
+                   "no per-step values)")
+    p.add_argument("--no-detail", action="store_true",
+                   help="skip writing the detail table (it can be large: one row per model per "
+                   "instance per horizon step)")
     return p.parse_args()
 
 
@@ -86,20 +102,30 @@ def main() -> None:
         print(f"  {r}")
 
     device = torch.device(args.device) if args.device else None
-    case_library_df, long_df = build_case_library(
+    case_library_df, long_df, detail_df = build_case_library(
         run_dirs, device=device, max_batches=args.max_eval_batches, verbose=True
     )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    case_library_df.to_csv(out_path, index=False)
-    print(f"\nSaved case library ({len(case_library_df)} instances) -> {out_path}")
+
+    if not args.no_detail:
+        out_detail_path = (
+            Path(args.out_detail) if args.out_detail
+            else out_path.with_name(f"{out_path.stem}_detail{out_path.suffix}")
+        )
+        out_detail_path.parent.mkdir(parents=True, exist_ok=True)
+        detail_df.to_csv(out_detail_path, index=False)
+        print(f"Saved detail table ({len(detail_df)} rows: forecasted + true values, per model per instance per step) -> {out_detail_path}")
 
     if args.out_long:
         out_long_path = Path(args.out_long)
         out_long_path.parent.mkdir(parents=True, exist_ok=True)
         long_df.to_csv(out_long_path, index=False)
         print(f"Saved long table ({len(long_df)} rows) -> {out_long_path}")
+
+    case_library_df.to_csv(out_path, index=False)
+    print(f"Saved case library summary ({len(case_library_df)} instances) -> {out_path}")
 
 
 if __name__ == "__main__":

@@ -311,16 +311,33 @@ python scripts/build_case_library.py \
   --out runs/dc_house/case_library.csv
 ```
 
-Output columns: `region_id, lookback_start, forecast_start, forecast_end,
-model_best, model_best_mae, model_best_rmse, model_best_category` (category
-is `spatial_temporal` / `DL` / `foundation`, or `other` for statistical/ML
-baselines). It reuses each run's own saved checkpoint (no retraining) and
-evaluates with `window.test_stride` forced to `1` regardless of what the run
-was trained with, since the stride exists only to cut normal benchmark
-evaluation cost, not for this exhaustive per-instance comparison — so this
-can be considerably slower than a normal `run_one.py` evaluation. All runs
-passed together must share the same dataset, window shape, and split
-boundaries (validated up front, with a clear error listing any mismatch).
+Three CSVs are written, each derived from the one before it:
+
+1. **`<out>_detail.csv`** — one row per (model, instance, horizon step):
+   `model, model_category, split, region_id, lookback_start, forecast_start,
+   forecast_end, step_ahead, target_date, y_true_raw, y_pred_raw,
+   abs_error_raw`. The actual forecasted and true values, in raw target
+   units — computed once, directly from each model's predictions, before any
+   summarization. This is the source of truth everything else is aggregated
+   from; skip it with `--no-detail` if you only want the summary (it's the
+   largest of the three — one row per horizon step, not per instance).
+2. **`--out-long`** (optional) — one row per (model, instance): `mae, rmse`
+   aggregated over the horizon, no per-step values.
+3. **`--out`** — the case library summary: one row per instance, the winning
+   model only — `region_id, lookback_start, forecast_start, forecast_end,
+   model_best, model_best_mae, model_best_rmse, model_best_category`
+   (category is `spatial_temporal` / `DL` / `foundation`, or `other` for
+   statistical/ML baselines).
+
+It reuses each run's own saved checkpoint (no retraining — except models with
+no train-dependent state, like `timesfm_zero`/`chronos2_zero`, which run
+directly since there's nothing a missing checkpoint would lose) and evaluates
+with `window.test_stride` forced to `1` regardless of what the run was
+trained with, since the stride exists only to cut normal benchmark evaluation
+cost, not for this exhaustive per-instance comparison — so this can be
+considerably slower than a normal `run_one.py` evaluation. All runs passed
+together must share the same dataset, window shape, and split boundaries
+(validated up front, with a clear error listing any mismatch).
 
 `scripts/explain_instance.py` gives an on-demand, model-agnostic breakdown of
 one instance's forecast, via occlusion (zero part of the input, rerun the
