@@ -297,6 +297,7 @@ def run_one_cfg(
         try:
             return evaluate_mse_loss(model, bundle, split=split, device=dev, max_batches=max_eval)
         except Exception as e:
+            raise(e)
             return {"error": f"{type(e).__name__}: {e}"}
 
     loss_train = _safe_loss("train")

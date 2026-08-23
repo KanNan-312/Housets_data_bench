@@ -15,5 +15,5 @@ transforms:
     enabled: true
     scope: global
   pca:
-    enabled: true
+    enabled: false
     n_components: 16

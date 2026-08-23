@@ -40,6 +40,9 @@ from housets_bench.case_library import build_case_library
 from housets_bench.utils.config import load_yaml
 
 
+MODELS = ["timesfm_zero", "chronos2_zero", "dlinear", "itransformer", "patchtst", "timemixer",
+          "stgcn", "dcrnn", "d2stgnn", "graph_wavenet", "stgformer"]
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--runs-root", type=str, required=True,
@@ -69,6 +72,7 @@ def _discover_run_dirs(runs_root: Path, models: Optional[List[str]]) -> List[Pat
         child for child in sorted(runs_root.iterdir())
         if child.is_dir() and (child / "config.yaml").exists()
     ]
+
     if not candidates:
         raise SystemExit(f"No run directories with config.yaml found under {runs_root}")
 
@@ -96,8 +100,8 @@ def main() -> None:
     if not runs_root.is_dir():
         raise SystemExit(f"--runs-root not found or not a directory: {runs_root}")
 
-    run_dirs = _discover_run_dirs(runs_root, args.models)
-    print(f"Found {len(run_dirs)} run(s):")
+    # run_dirs = _discover_run_dirs(runs_root, args.models)
+    run_dirs = _discover_run_dirs(runs_root, MODELS)
     for r in run_dirs:
         print(f"  {r}")
 

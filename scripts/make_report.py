@@ -10,8 +10,6 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from housets_bench.metrics.reporting import collect_runs, pivot_metric
 
 
-DEFAULT_WINDOWS = ["w6_h3", "w6_h6", "w6_h12", "w12_h3", "w12_h6", "w12_h12"]
-
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
@@ -35,7 +33,7 @@ def main() -> None:
     tasks = sorted(df["task"].dropna().unique().tolist())
     for task in tasks:
         for metric in ("log_rmse", "rmse", "mape", "mae", "log_mae"):
-            piv = pivot_metric(df, task=task, split="test", metric=metric, window_order=DEFAULT_WINDOWS)
+            piv = pivot_metric(df, task=task, split="test", metric=metric)
             if not piv.empty:
                 piv.to_csv(out_dir / f"pivot_test_{metric}_{task}.csv")
 
