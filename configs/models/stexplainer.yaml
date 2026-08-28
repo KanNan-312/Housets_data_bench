@@ -1,13 +1,23 @@
 model:
   name: stexplainer
   hparams:
-    d_model: 32
-    n_heads: 4
-    n_layers: 2
-    order: 2
-    dropout: 0.1
-    gib_size_weight: 1.0e-3
-    gib_entropy_weight: 1.0e-3
+    d_model: 16
+    d_model_spat: 64
+    d_model_temp: 64
+    d_model_feat: 32
+    node_emb_dim: 32
+    n_heads_l1: 4
+    n_heads_l2: 1
+    dropout: 0.15
+    extractor_dropout: 0.5
+    init_r: 0.9
+    final_r: 0.5
+    r_anneal_frac: 0.4
+    beta_spat: 1.0
+    beta_temp: 1.0
+    beta_feat: 1.0
+    beta_ramp_start: 0.25
+    beta_ramp_end: 0.5
     epochs: 30
     lr: 1.0e-3
     weight_decay: 1.0e-4

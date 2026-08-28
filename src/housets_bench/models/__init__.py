@@ -34,6 +34,7 @@ from .gnn.gnn_forecaster import (  # noqa: F401
 from .gnn.dcrnn import DCRNNForecaster  # noqa: F401
 from .gnn.stgformer import STGformerForecaster  # noqa: F401
 from .gnn.d2stgnn import D2STGNNForecaster  # noqa: F401
+from .gnn.staeformer import STAEformerForecaster  # noqa: F401
 
 # graph neural network baselines — crime (simplified adaptations, see module docstrings)
 from .gnn.aist import AISTForecaster  # noqa: F401

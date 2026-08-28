@@ -1,16 +1,20 @@
 """On-demand explainability for one (region, lookback_start) forecast instance.
 
-Two complementary breakdowns, both via model-agnostic **occlusion**: zero one
-"cell" of the instance's input in the model's own processed feature space
-(under this benchmark's z-score transform, zeroing is approximately "replace
-with that cell's average", not an implausible perturbation), rerun the
-forward pass, and measure how much the target region's forecast moves.
+Two complementary breakdowns, both via model-agnostic **occlusion**
+(:func:`occlusion_sensitivity`): replace one "object" (a neighbor node's
+whole feature vector, or one feature channel) with its **mean over the
+training history** — computed in the model's own processed feature space, so
+it's a true in-distribution replacement rather than an arbitrary value —
+rerun the forward pass, and measure how much the target region's forecast
+moves: ``sensitivity = mean(|y_full - y_occluded|)`` over the horizon, in raw
+target units.
 
 - :func:`explain_neighbors` — spatial axis, GNN models only: occlude one
-  *node* (all its features) at a time. Which neighbor regions did the
-  forecast rely on?
+  *node* (all its features, replaced with that node's own per-feature
+  training means) at a time. Which neighbor regions did the forecast rely on?
 - :func:`explain_features` — variable axis, any registered model: occlude
-  one *feature channel* (for the target region only) at a time. Which input
+  one *feature channel* (for the target region only, replaced with the
+  target's own training mean for that feature) at a time. Which input
   variables (own price history, homes_sold, inventory, ...) did the forecast
   rely on?
 
@@ -103,10 +107,35 @@ def _predict_target_raw(
     return _to_raw_horizon(bundle, _to_numpy(y_target))
 
 
+def _train_feature_means(bundle: ProcBundle) -> np.ndarray:
+    """Per-node, per-feature mean over the training split, in the model's own
+    processed feature space (matching ``bundle.x_cols`` order) — ``[N, Dx]``.
+    The occlusion fill value: an actual in-distribution average, not an
+    arbitrary placeholder like zero.
+    """
+    name_to_idx = {n: i for i, n in enumerate(bundle.aligned_proc.schema.continuous_cols)}
+    x_idx = [name_to_idx[c] for c in bundle.x_cols]
+    train_start, train_end = bundle.raw.split.train
+    values = bundle.aligned_proc.values  # [N, T, D]
+    return values[:, train_start:train_end, :][:, :, x_idx].mean(axis=1)  # [N, Dx]
+
+
+def occlusion_sensitivity(y_full_raw: np.ndarray, y_occluded_raw: np.ndarray) -> float:
+    """Sensitivity of a forecast to one occluded object.
+
+    ``sensitivity = mean(|y_full - y_occluded|)`` over the forecast horizon,
+    in raw target units — ``y_full`` is the model's own unperturbed forecast
+    (not the ground truth), ``y_occluded`` is its forecast with one object
+    (a neighbor node or a feature channel) replaced by its training-history
+    mean.
+    """
+    return float(np.mean(np.abs(np.asarray(y_full_raw) - np.asarray(y_occluded_raw))))
+
+
 def _normalize_contributions(df: pd.DataFrame) -> pd.DataFrame:
-    total = df["delta_mae_raw"].sum()
+    total = df["sensitivity"].sum()
     if total > 0:
-        df["contribution_pct"] = 100.0 * df["delta_mae_raw"] / total
+        df["contribution_pct"] = 100.0 * df["sensitivity"] / total
     else:
         df["contribution_pct"] = 100.0 / max(len(df), 1)
     return df
@@ -123,7 +152,7 @@ def explain_neighbors(
 
     GNN models only (there is no neighbor structure otherwise). Returns a
     DataFrame with columns ``neighbor_region_id, contribution_pct,
-    delta_mae_raw, is_self``, sorted by contribution descending.
+    sensitivity, is_self``, sorted by contribution descending.
     """
     model, bundle, cfg = load_run(run_dir, device=device)
 
@@ -148,20 +177,22 @@ def explain_neighbors(
     )
 
     x_base = _build_instance_x(bundle, target_idx, t0, seq_len, is_gnn=True)
-    baseline_raw = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=True, device=device)
+    y_full = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=True, device=device)
+    train_means = _train_feature_means(bundle)  # [N, Dx]
 
     rows = []
     for node_idx, label, is_self in [(target_idx, "self", True)] + [
         (n, zipcodes[n], False) for n in neighbor_idxs
     ]:
         x_occ = x_base.clone()
-        x_occ[:, :, node_idx, :] = 0.0
-        occ_raw = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=True, device=device)
-        delta = float(np.mean(np.abs(occ_raw - baseline_raw)))
-        rows.append({"neighbor_region_id": label, "delta_mae_raw": delta, "is_self": is_self})
+        fill = torch.as_tensor(train_means[node_idx], dtype=x_occ.dtype)  # [Dx]
+        x_occ[:, :, node_idx, :] = fill
+        y_occluded = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=True, device=device)
+        sensitivity = occlusion_sensitivity(y_full, y_occluded)
+        rows.append({"neighbor_region_id": label, "sensitivity": sensitivity, "is_self": is_self})
 
     df = _normalize_contributions(pd.DataFrame(rows))
-    return df[["neighbor_region_id", "contribution_pct", "delta_mae_raw", "is_self"]].sort_values(
+    return df[["neighbor_region_id", "contribution_pct", "sensitivity", "is_self"]].sort_values(
         "contribution_pct", ascending=False
     ).reset_index(drop=True)
 
@@ -178,29 +209,32 @@ def explain_features(
     Works for any registered model (GNN, DL, foundation, statistical/ML —
     anything implementing ``predict_batch``), not just spatiotemporal ones.
     Occludes one feature channel at a time for the target region only
-    (zeroed across the whole lookback window), leaving every other
-    region/feature untouched. Returns a DataFrame with columns ``feature,
-    contribution_pct, delta_mae_raw``, sorted by contribution descending.
+    (replaced with the target's own training-history mean for that feature,
+    across the whole lookback window), leaving every other region/feature
+    untouched. Returns a DataFrame with columns ``feature, contribution_pct,
+    sensitivity``, sorted by contribution descending.
     """
     model, bundle, _cfg = load_run(run_dir, device=device)
     is_gnn = isinstance(model, GNNForecasterBase)
 
     target_idx, t0, seq_len = _resolve_target_and_time(bundle, region_id, lookback_start)
     x_base = _build_instance_x(bundle, target_idx, t0, seq_len, is_gnn=is_gnn)
-    baseline_raw = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=is_gnn, device=device)
+    y_full = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=is_gnn, device=device)
+    train_means = _train_feature_means(bundle)  # [N, Dx]
 
     rows = []
     for f, col_name in enumerate(bundle.x_cols):
         x_occ = x_base.clone()
+        fill = float(train_means[target_idx, f])
         if is_gnn:
-            x_occ[:, :, target_idx, f] = 0.0
+            x_occ[:, :, target_idx, f] = fill
         else:
-            x_occ[:, :, f] = 0.0
-        occ_raw = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=is_gnn, device=device)
-        delta = float(np.mean(np.abs(occ_raw - baseline_raw)))
-        rows.append({"feature": col_name, "delta_mae_raw": delta})
+            x_occ[:, :, f] = fill
+        y_occluded = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=is_gnn, device=device)
+        sensitivity = occlusion_sensitivity(y_full, y_occluded)
+        rows.append({"feature": col_name, "sensitivity": sensitivity})
 
     df = _normalize_contributions(pd.DataFrame(rows))
-    return df[["feature", "contribution_pct", "delta_mae_raw"]].sort_values(
+    return df[["feature", "contribution_pct", "sensitivity"]].sort_values(
         "contribution_pct", ascending=False
     ).reset_index(drop=True)
