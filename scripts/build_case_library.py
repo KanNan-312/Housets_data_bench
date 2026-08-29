@@ -38,7 +38,7 @@ import torch
 from housets_bench.case_library import build_case_library
 from housets_bench.utils.config import load_yaml
 
-
+MODELS = ["timesfm_zero", "graph_wavenet"]
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--runs-root", type=str, required=True,
@@ -87,7 +87,8 @@ def main() -> None:
     if not runs_root.is_dir():
         raise SystemExit(f"--runs-root not found or not a directory: {runs_root}")
 
-    run_dirs = _discover_run_dirs(runs_root, args.models)
+    # run_dirs = _discover_run_dirs(runs_root, args.models)
+    run_dirs = _discover_run_dirs(runs_root, MODELS)
     print(f"Found {len(run_dirs)} run(s):")
     for r in run_dirs:
         print(f"  {r}")
