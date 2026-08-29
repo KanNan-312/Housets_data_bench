@@ -26,7 +26,7 @@ library, which would need one forward pass per perturbation per instance).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -93,6 +93,16 @@ def _build_instance_x(bundle: ProcBundle, target_idx: int, t0: int, seq_len: int
     return torch.tensor(x_np, dtype=torch.float32).unsqueeze(0)  # [1, L, Dx]
 
 
+def _build_instance_x_mark(bundle: ProcBundle, t0: int, seq_len: int) -> torch.Tensor:
+    """Single-instance time marks [1, L, 2] (year, month) — some models (e.g. Chronos-2,
+    which builds a real-timestamp DataFrame) need this alongside ``x`` in the batch dict;
+    it's the same regardless of node/target, so it's built once per instance and reused
+    across every occlusion/masking variant of that instance.
+    """
+    tm_np = bundle.aligned_proc.time_marks[t0 : t0 + seq_len, :]  # [L, 2]
+    return torch.tensor(tm_np, dtype=torch.float32).unsqueeze(0)  # [1, L, 2]
+
+
 def _predict_target_raw(
     model: BaseForecaster,
     bundle: ProcBundle,
@@ -101,8 +111,12 @@ def _predict_target_raw(
     *,
     is_gnn: bool,
     device: Optional[torch.device],
+    x_mark: Optional[torch.Tensor] = None,
 ) -> np.ndarray:
-    y = model.predict_batch({"x": x}, bundle=bundle, device=device)
+    batch: Dict[str, torch.Tensor] = {"x": x}
+    if x_mark is not None:
+        batch["x_mark"] = x_mark
+    y = model.predict_batch(batch, bundle=bundle, device=device)
     y_target = y[target_idx] if is_gnn else y[0]  # [pred_len, Dy]
     return _to_raw_horizon(bundle, _to_numpy(y_target))
 
@@ -177,7 +191,8 @@ def explain_neighbors(
     )
 
     x_base = _build_instance_x(bundle, target_idx, t0, seq_len, is_gnn=True)
-    y_full = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=True, device=device)
+    x_mark = _build_instance_x_mark(bundle, t0, seq_len)
+    y_full = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=True, device=device, x_mark=x_mark)
     train_means = _train_feature_means(bundle)  # [N, Dx]
 
     rows = []
@@ -187,7 +202,7 @@ def explain_neighbors(
         x_occ = x_base.clone()
         fill = torch.as_tensor(train_means[node_idx], dtype=x_occ.dtype)  # [Dx]
         x_occ[:, :, node_idx, :] = fill
-        y_occluded = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=True, device=device)
+        y_occluded = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=True, device=device, x_mark=x_mark)
         sensitivity = occlusion_sensitivity(y_full, y_occluded)
         rows.append({"neighbor_region_id": label, "sensitivity": sensitivity, "is_self": is_self})
 
@@ -219,7 +234,8 @@ def explain_features(
 
     target_idx, t0, seq_len = _resolve_target_and_time(bundle, region_id, lookback_start)
     x_base = _build_instance_x(bundle, target_idx, t0, seq_len, is_gnn=is_gnn)
-    y_full = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=is_gnn, device=device)
+    x_mark = _build_instance_x_mark(bundle, t0, seq_len)
+    y_full = _predict_target_raw(model, bundle, x_base, target_idx, is_gnn=is_gnn, device=device, x_mark=x_mark)
     train_means = _train_feature_means(bundle)  # [N, Dx]
 
     rows = []
@@ -230,7 +246,7 @@ def explain_features(
             x_occ[:, :, target_idx, f] = fill
         else:
             x_occ[:, :, f] = fill
-        y_occluded = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=is_gnn, device=device)
+        y_occluded = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=is_gnn, device=device, x_mark=x_mark)
         sensitivity = occlusion_sensitivity(y_full, y_occluded)
         rows.append({"feature": col_name, "sensitivity": sensitivity})
 

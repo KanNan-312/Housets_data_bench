@@ -45,6 +45,7 @@ import torch
 from housets_bench.experiments.run_loader import load_run
 from housets_bench.explain import (
     _build_instance_x,
+    _build_instance_x_mark,
     _predict_target_raw,
     _resolve_target_and_time,
     _train_feature_means,
@@ -136,6 +137,7 @@ def shapley_feature_importance(
 
     target_idx, t0, seq_len = _resolve_target_and_time(bundle, region_id, lookback_start)
     x_base = _build_instance_x(bundle, target_idx, t0, seq_len, is_gnn=is_gnn)
+    x_mark = _build_instance_x_mark(bundle, t0, seq_len)
     train_means = _train_feature_means(bundle)  # [N, Dx]
 
     group_specs = _build_groups(bundle.x_cols, seq_len, groups=groups, n_temporal_groups=n_temporal_groups)
@@ -171,7 +173,7 @@ def shapley_feature_importance(
     def _f_scalar(present: frozenset) -> float:
         if present not in f_cache:
             x_occ = _masked_x(present)
-            y = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=is_gnn, device=device)
+            y = _predict_target_raw(model, bundle, x_occ, target_idx, is_gnn=is_gnn, device=device, x_mark=x_mark)
             f_cache[present] = float(np.mean(y))
         return f_cache[present]
 
