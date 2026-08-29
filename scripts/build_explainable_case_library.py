@@ -44,8 +44,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--runs-root", type=str, required=True,
                    help="directory containing one subdirectory per run (config.yaml + checkpoint.pt)")
-    p.add_argument("--univariate-model", type=str, required=True, help="e.g. patchtst, timesfm_zero")
-    p.add_argument("--multivariate-model", type=str, required=True, help="e.g. chronos2_zero, itransformer")
+    p.add_argument("--univariate-model", type=str, default="timesfm_zero", help="e.g. patchtst, timesfm_zero")
+    p.add_argument("--multivariate-model", type=str, default="chronos2_zero", help="e.g. chronos2_zero, itransformer")
     p.add_argument("--stexplainer-model", type=str, default="stexplainer")
     p.add_argument("--device", type=str, default=None, help="e.g. cuda, cpu (default: each run's own config)")
     p.add_argument("--max-eval-batches", type=int, default=None, help="cap batches per split per run (debugging)")
