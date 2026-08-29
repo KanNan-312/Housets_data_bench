@@ -8,8 +8,12 @@ explanations (which node/feature/time mattered):
 
   - forecasts_detail.csv        — point forecasts from all 3 runs, every instance
   - feature_importance.csv      — grouped-Shapley feature importance (the
-                                   multivariate model only), a sampled subset of
-                                   test instances (2^N model evals per instance)
+                                   multivariate model only): a sampled subset of
+                                   --feature-importance-split instances by default,
+                                   or every instance in that split if
+                                   --explain-n-instances <= 0 (2^N model evals
+                                   per instance — check the printed cost estimate
+                                   before running with "every instance")
   - stexplainer_explanation.csv — STExplainer's native node/time/feature
                                    explanation, every instance (cheap: one extra
                                    forward pass per time window)
@@ -50,8 +54,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default=None, help="e.g. cuda, cpu (default: each run's own config)")
     p.add_argument("--max-eval-batches", type=int, default=None, help="cap batches per split per run (debugging)")
     p.add_argument("--explain-n-instances", type=int, default=20,
-                   help="number of test instances to run grouped-SHAP feature importance on "
-                   "(2^N_groups model evaluations each — keep this modest)")
+                   help="number of instances to run grouped-SHAP feature importance on "
+                   "(2^N_groups model evaluations each — keep this modest). Pass 0 or a "
+                   "negative number to run every instance in --feature-importance-split instead of a sample")
+    p.add_argument("--feature-importance-split", type=str, default="test", choices=["train", "val", "test"],
+                   help="which split's instances grouped-SHAP feature importance is computed over (default: test)")
     p.add_argument("--n-temporal-groups", type=int, default=1,
                    help="split the lookback window into this many temporal-bucket SHAP groups too "
                    "(default 1 = feature-only grouping)")
@@ -103,6 +110,7 @@ def main() -> None:
         device=device,
         max_batches=args.max_eval_batches,
         explain_n_instances=args.explain_n_instances,
+        feature_importance_split=args.feature_importance_split,
         n_temporal_groups=args.n_temporal_groups,
         verbose=True,
     )
