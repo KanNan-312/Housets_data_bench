@@ -6,6 +6,8 @@ against each other): this always uses exactly **one** model per family —
 2. a multivariate model (e.g. Chronos-2, iTransformer) — point forecasts over
    every instance, plus grouped-Shapley feature importance
    (:mod:`housets_bench.shap_occlusion`) for a sampled subset of instances
+   (or every instance in the split, if ``explain_n_instances`` is 0/None —
+   each instance costs ``2^N_groups`` model evaluations, so this can be slow)
 3. STExplainer — point forecasts over every instance, plus its native
    node/time/feature explanation (:meth:`STExplainerForecaster.explain`) for
    every instance (a single extra forward pass per window, not the expensive
@@ -23,14 +25,56 @@ import pandas as pd
 import torch
 
 from housets_bench.case_library import DETAIL_COLUMNS, _iter_instance_forecasts, _join_values, model_category
+from housets_bench.data.windowing import generate_window_indices
 from housets_bench.experiments.run_loader import load_run
+from housets_bench.models.gnn.gnn_forecaster import GNNForecasterBase
 from housets_bench.models.gnn.stexplainer import STExplainerForecaster
-from housets_bench.shap_occlusion import shapley_feature_importance
+from housets_bench.shap_occlusion import _build_groups, shapley_feature_importance
 
 FEATURE_IMPORTANCE_COLUMNS = ["region_id", "lookback_start", "forecast_start", "group", "shap_value", "contribution_pct"]
 STEXPLAINER_EXPLANATION_COLUMNS = [
     "region_id", "lookback_start", "forecast_start", "forecast_end", "axis", "object_id", "importance", "contribution_pct"
 ]
+
+
+def _nan_dropped_window_counts(bundle) -> Dict[str, Tuple[int, int]]:
+    """Per split: ``(n_dropped_due_to_nan, n_candidate_windows)`` for the
+    per-region (non-GNN) windowing path.
+
+    ``WindowDataset`` (used by univariate/multivariate models via
+    ``bundle.dataloaders``) is built from indices generated with
+    ``require_finite=True`` (:func:`housets_bench.data.windowing.generate_window_indices`)
+    — any ``(region, t0)`` window whose lookback *or* forecast slice contains a
+    NaN in that model's own ``x_cols``/``y_cols`` is silently dropped.
+    ``GraphWindowDataset`` (used by GNN/STExplainer models) has no such filter
+    at all — it keeps every time window regardless of NaNs. So instance counts
+    naturally differ between the two paths whenever the raw panel has missing
+    values, and can even differ between two non-GNN models if their
+    ``x_cols``/``y_cols`` differ. This recomputes the unfiltered candidate
+    count so that difference is measurable instead of just asserted.
+    """
+    name_to_idx = {n: i for i, n in enumerate(bundle.aligned_proc.schema.continuous_cols)}
+    x_idx = [name_to_idx[c] for c in bundle.x_cols]
+    y_idx = [name_to_idx[c] for c in bundle.y_cols]
+    out: Dict[str, Tuple[int, int]] = {}
+    for split in ("train", "val", "test"):
+        split_range = bundle.raw.split.range(split)
+        n_total = len(
+            generate_window_indices(
+                values=bundle.aligned_proc.values,
+                split_range=split_range,
+                split_start_for_targets=split_range[0],
+                x_idx=x_idx,
+                y_idx=y_idx,
+                spec=bundle.raw.spec,
+                allow_history=(split != "train"),
+                require_finite=False,
+                stride=1,
+            )
+        )
+        n_kept = len(bundle.dataloaders[split].dataset)
+        out[split] = (n_total - n_kept, n_total)
+    return out
 
 
 def _forecast_detail_rows(
@@ -40,6 +84,17 @@ def _forecast_detail_rows(
     model, bundle, cfg = load_run(run_dir, device=device, cfg_overrides={"window": {"test_stride": 1}})
     model_name = str((cfg.get("model", {}) or {}).get("name"))
     category = model_category(model_name)
+
+    if not isinstance(model, GNNForecasterBase):
+        for split, (n_dropped, n_total) in _nan_dropped_window_counts(bundle).items():
+            if n_dropped > 0:
+                print(
+                    f"[explainable_library]   {model_name} {split}: {n_dropped}/{n_total} candidate "
+                    "windows dropped (NaN in x/y slice for this model's feature columns) — "
+                    "GNN/STExplainer's GraphWindowDataset has no such filter, so its instance "
+                    "count for the same split will not match this one if the raw panel has "
+                    "missing values"
+                )
 
     records: List[Dict[str, Any]] = []
     for split in ("train", "val", "test"):
@@ -67,16 +122,20 @@ def _forecast_detail_rows(
     return records, model, bundle, cfg
 
 
-def _sample_test_instances(
-    model, bundle, *, device: Optional[torch.device], n: int
+def _select_instances(
+    model, bundle, *, device: Optional[torch.device], n: Optional[int], split: str = "test"
 ) -> List[Tuple[str, Any, Any]]:
-    """First ``n`` distinct (region_id, lookback_start) instances from the test split, time order."""
+    """Distinct (region_id, lookback_start, forecast_start) instances from ``split``, time order.
+
+    ``n`` caps how many are returned; pass ``None`` (or <= 0) to return every
+    instance in the split.
+    """
     seen: List[Tuple[str, Any, Any]] = []
-    for meta, _y_true, _y_pred in _iter_instance_forecasts(model, bundle, "test", device=device, max_batches=None):
+    for meta, _y_true, _y_pred in _iter_instance_forecasts(model, bundle, split, device=device, max_batches=None):
         key = (meta["region_id"], meta["lookback_start"], meta["forecast_start"])
         if key not in seen:
             seen.append(key)
-        if len(seen) >= n:
+        if n is not None and n > 0 and len(seen) >= n:
             break
     return seen
 
@@ -87,11 +146,12 @@ def _feature_importance_rows(
     bundle,
     *,
     device: Optional[torch.device],
-    n_instances: int,
+    n_instances: Optional[int],
     groups: Optional[Dict[str, List[str]]],
     n_temporal_groups: int,
+    split: str = "test",
 ) -> List[Dict[str, Any]]:
-    instances = _sample_test_instances(model, bundle, device=device, n=n_instances)
+    instances = _select_instances(model, bundle, device=device, n=n_instances, split=split)
     records: List[Dict[str, Any]] = []
     for region_id, lookback_start, forecast_start in instances:
         shap_df = shapley_feature_importance(
@@ -213,7 +273,8 @@ def build_explainable_case_library(
     stexplainer_run_dir: Union[str, Path],
     device: Optional[torch.device] = None,
     max_batches: Optional[int] = None,
-    explain_n_instances: int = 20,
+    explain_n_instances: Optional[int] = 20,
+    feature_importance_split: str = "test",
     feature_groups: Optional[Dict[str, List[str]]] = None,
     n_temporal_groups: int = 1,
     verbose: bool = True,
@@ -246,15 +307,20 @@ def build_explainable_case_library(
     if not forecasts_detail_df.empty:
         forecasts_detail_df = forecasts_detail_df[DETAIL_COLUMNS]
 
+    run_all_instances = explain_n_instances is None or explain_n_instances <= 0
     if verbose:
+        scope = f"every {feature_importance_split}" if run_all_instances else f"{explain_n_instances} {feature_importance_split}"
+        group_specs = _build_groups(mv_bundle.x_cols, int(mv_bundle.raw.spec.seq_len), groups=feature_groups, n_temporal_groups=n_temporal_groups)
+        n_evals_per_instance = 2 ** len(group_specs)
         print(
-            f"[explainable_library] grouped-SHAP feature importance for "
-            f"{explain_n_instances} test instances of the multivariate model ..."
+            f"[explainable_library] grouped-SHAP feature importance for {scope} instances of the "
+            f"multivariate model ({len(group_specs)} groups -> {n_evals_per_instance} model evals/instance) ..."
         )
     fi_records = _feature_importance_rows(
         multivariate_run_dir, mv_model, mv_bundle,
         device=device, n_instances=explain_n_instances,
         groups=feature_groups, n_temporal_groups=n_temporal_groups,
+        split=feature_importance_split,
     )
     feature_importance_df = pd.DataFrame.from_records(fi_records)
     if not feature_importance_df.empty:
