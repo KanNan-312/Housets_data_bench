@@ -1,0 +1,15 @@
+model:
+  name: staeformer
+  hparams:
+    input_embedding_dim: 24
+    spatial_embedding_dim: 8
+    adaptive_embedding_dim: 24
+    n_heads: 4
+    n_layers: 3
+    feed_forward_dim: 64
+    dropout: 0.1
+    epochs: 30
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+    patience: 7
+    batch_size: 8

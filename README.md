@@ -187,12 +187,21 @@ The current `configs/models/` directory includes the following model configs.
 - `d2stgnn` — decoupled dynamic STGNN (VLDB 2022), direct port (dynamic graph is computed
   internally each forward pass; time-of-day/day-of-week features are omitted since this
   benchmark's datasets are monthly)
+- `staeformer` — spatio-temporal adaptive embedding transformer (XDZhelheim/STAEformer,
+  AAAI 2024), direct port — it doesn't use graph convolution or the adjacency at all,
+  purely temporal + spatial self-attention over learned node/adaptive embeddings;
+  time-of-day/day-of-week embeddings are omitted since this benchmark's datasets are monthly
 - `cast` — causal spatio-temporal representation learning (yutong-xia/CaST), direct port
   (self-discovers pseudo-environments via a VQ codebook — no external environment labels needed)
-- `stexplainer` — explainable STGNN (HKUDS/STExplainer), run **forecast-only**: its GIB
-  structure-distillation term is kept as an internal training regularizer, but the learned
-  explanation mask isn't surfaced anywhere since this benchmark has no explanation-quality
-  scoring path
+- `stexplainer` — faithful port of the actually-shipped STGSAT model (HKUDS/STExplainer,
+  source-verified): a GSAT (Graph Stochastic Attention) information-bottleneck pass over
+  the real spatial adjacency and a second pass over a complete graph across the lookback
+  timesteps, each producing a per-instance stochastic edge-attention gate regularized by
+  `KL(Bernoulli(att) ‖ Bernoulli(r))` (r annealed 0.9→0.5 over training). Extended with a
+  **third GSAT pass over the feature-channel axis** (not present in the original paper,
+  which has no feature-level mechanism at all — this mirrors exactly how the paper already
+  treats time as a complete-graph pass). Explanations are exposed per instance via
+  `STExplainerForecaster.explain()` — see the explainable case library below.
 - `aist` — **simplified** port of the attention-based interpretable crime model
   (YeasirRayhanPrince/aist): keeps only the graph-attention mechanism over crime counts,
   batched over all nodes jointly; drops the paper's required taxi/POI/street-crime data and
@@ -338,10 +347,14 @@ together must share the same dataset, window shape, and split boundaries
 (validated up front, with a clear error listing any mismatch).
 
 `scripts/explain_instance.py` gives an on-demand, model-agnostic breakdown of
-one instance's forecast, via occlusion (zero part of the input, rerun the
-forward pass, measure how much the target's forecast moves — under this
-benchmark's z-score transform, zeroing is approximately "replace with the
-average", not an implausible perturbation):
+one instance's forecast via **occlusion** (`housets_bench.explain.occlusion_sensitivity`):
+replace one object — a neighbor node's whole feature vector, or one feature
+channel — with its **mean over the training history** (an actual
+in-distribution value, computed per-node/per-feature from the model's own
+processed feature space, not an arbitrary placeholder like zero), rerun the
+forward pass, and measure `sensitivity = mean(|y_full - y_occluded|)` over
+the horizon, in raw target units (`y_full` is the model's own unperturbed
+forecast, not the ground truth):
 
 ```bash
 python scripts/explain_instance.py \
@@ -351,16 +364,70 @@ python scripts/explain_instance.py \
 
 - **Feature contribution** (any model — GNN, DL, foundation, statistical/ML):
   occludes one input variable at a time (own price history, homes_sold,
-  inventory, ...) for the target region and reports each one's share of the
-  forecast change.
+  inventory, ...) for the target region and reports each one's `sensitivity`
+  and normalized `contribution_pct` share of the total forecast change.
 - **Neighbor contribution** (spatiotemporal/GNN models only, skipped
-  otherwise): occludes one neighbor region at a time and reports each one's
-  share, including a `self` row for how much the forecast relies on the
-  target region's own history vs. its neighbors.
+  otherwise): occludes one neighbor region at a time (all of its features,
+  replaced with that region's own training means) and reports the same,
+  including a `self` row for how much the forecast relies on the target
+  region's own history vs. its neighbors.
 
 Both work identically across every model in the registry — not just ones
 with built-in attention — since they only call the public
 `model.predict_batch(...)` API.
+
+---
+
+## Explainable case library: 3 model families, node/feature/time explanation
+
+`scripts/build_explainable_case_library.py` is a different, more specialized tool
+from `build_case_library.py` above: instead of ranking many models against each
+other, it always uses exactly **one** model per family — a univariate model, a
+multivariate model, and STExplainer — reusing their already-trained checkpoints:
+
+```bash
+python scripts/build_explainable_case_library.py \
+  --runs-root runs/dc_house \
+  --univariate-model timesfm_zero \
+  --multivariate-model chronos2_zero \
+  --stexplainer-model stexplainer \
+  --explain-n-instances 20 \
+  --out-dir runs/dc_house/explainable_case_library
+```
+
+Writes three CSVs:
+- **`forecasts_detail.csv`** — point forecasts from all 3 runs, every instance
+  (same shape as `build_case_library.py`'s detail table).
+- **`feature_importance.csv`** — grouped **exact Shapley** feature importance for
+  the multivariate model (`housets_bench.shap_occlusion`, implementing
+  arXiv:2604.28149's method: exact Shapley value over `2^N` coalitions of
+  feature groups — one group per covariate by default, `2^N` model evaluations
+  per instance). Masking is native (missing values, which Chronos's own
+  tokenizer treats as such) for Chronos models, and training-history-mean
+  substitution for any fixed-shape model (iTransformer, etc.) — matching the
+  paper's own model-specific distinction. Computed for a sampled subset of test
+  instances (`--explain-n-instances`), since it's `2^N` evaluations each.
+- **`stexplainer_explanation.csv`** — STExplainer's own node/time/feature
+  explanation for every instance (cheap: one extra forward pass per time
+  window, not `2^N`). `node_importance` is genuinely target-specific (GAT
+  attention rows are per-target by construction); `time_importance`/
+  `feature_importance` are window-level, shared across every region's forecast
+  in that time window — an architectural fact of the real GSAT mechanism
+  (those branches operate on representations already aggregated across all
+  regions/timesteps before their own GSAT pass runs), not a simplification.
+
+## Chronos-2 reconciliation
+
+A source-verified check of `_Chronos2Base` against the real `Chronos2Pipeline.predict_df`
+API confirmed its covariate handling is already correct — passing every input
+feature as a flat DataFrame column is the documented past-only-covariate
+mechanism, and Chronos-2 does use them. The one divergence found: `Dy==1` is a
+self-imposed restriction in this wrapper, not a real API limit (`predict_df`
+supports genuine joint multi-target forecasting via `target=[...]`) — left
+as-is since lifting it would need broader single-target-assumption changes
+throughout the evaluator/case-library/explain code, and this benchmark's
+explainability tools target single-target covariate importance, not
+multi-target forecasting.
 
 ---
 
