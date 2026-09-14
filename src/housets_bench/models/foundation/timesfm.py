@@ -150,42 +150,30 @@ def _load_timesfm(
         ) from e
 
     # Prefer the newer 2.5 API if present.
-    if hasattr(timesfm, "TimesFM_2p5_200M_torch"):
-        model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(repo_id)
+    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(repo_id)
 
-        cfg = timesfm.ForecastConfig(
-            max_context=1024,
-            max_horizon=max(16, int(pred_len)),
-            normalize_inputs=True,
-            use_continuous_quantile_head=False,
-            force_flip_invariance=True,
-            infer_is_positive=True,
-            fix_quantile_crossing=True,
-        )
+    cfg = timesfm.ForecastConfig(
+        max_context=1024,
+        max_horizon=max(16, int(pred_len)),
+        normalize_inputs=True,
+        use_continuous_quantile_head=False,
+        force_flip_invariance=True,
+        infer_is_positive=True,
+        fix_quantile_crossing=True,
+    )
+    try:
+        model.compile(cfg)
+    except Exception:
+        pass
+
+    if device is not None and hasattr(model, "to"):
         try:
-            model.compile(cfg)
+            model = model.to(device)
         except Exception:
             pass
 
-        if device is not None and hasattr(model, "to"):
-            try:
-                model = model.to(device)
-            except Exception:
-                pass
+    return _TimesFMForecastFn(api="v2p5", obj=model)
 
-        return _TimesFMForecastFn(api="v2p5", obj=model)
-
-    # Legacy PyPI API
-    if hasattr(timesfm, "TimesFm"):
-        backend = "gpu" if (device is not None and device.type == "cuda") else "cpu"
-        hparams = timesfm.TimesFmHparams(
-            backend=backend,
-            per_core_batch_size=int(infer_batch_size),
-            horizon_len=int(pred_len),
-        )
-        ckpt = timesfm.TimesFmCheckpoint(huggingface_repo_id=repo_id)
-        model = timesfm.TimesFm(hparams=hparams, checkpoint=ckpt)
-        return _TimesFMForecastFn(api="v1", obj=model)
 
     raise RuntimeError(
         "Unsupported timesfm package: could not find TimesFM_2p5_200M_torch or TimesFm in timesfm module"
@@ -200,7 +188,7 @@ class _TimesFMBase(BaseForecaster):
     def __init__(
         self,
         *,
-        repo_id: str = "google/timesfm-1.0-200m-pytorch",
+        repo_id: str = "google/timesfm-2.5-200m-pytorch",
         infer_batch_size: int = 64,
         calibrate: bool = False,
         max_calib_batches: Optional[int] = 200,

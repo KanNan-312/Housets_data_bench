@@ -1,7 +1,7 @@
 model:
   name: timesfm_zero
   hparams:
-    repo_id: google/timesfm-1.0-200m-pytorch
+    repo_id: google/timesfm-2.5-200m-pytorch
     infer_batch_size: 64
 dataloader:
   batch_size: 16

@@ -1,40 +1,35 @@
-#!/usr/bin/env bash
-set -euo pipefail
+# !/usr/bin/env bash
+# set -euo pipefail
 
-# MODELS=(
-#   "dlinear"
-#   "patchtst"
-#   "itransformer"
-#   "timemixer"
-#   "timellm"
-#   "gpt4ts"
-#   "stllm_plus"
-#   "chronos2_ft"
-#   "timesfm_ft"
-#   "chronos2_zero"
-#   "timesfm_zero"
-#   "stgcn"
-#   "stsgcn"
-#   "graph_wavenet"
-#   "dcrnn"
-#   "d2stgnn"
-#   "stgformer"
-#   "aist"
-#   "st_hhol"
-#   "stexplainer"
-#   "cast"
-# )
 MODELS=(
-  # "chronos2_zero"
-  # "timesfm_zero"
+  "dlinear"
+  "patchtst"
+  "itransformer"
+  "timemixer"
+  "timellm"
+  "gpt4ts"
+  # "stllm_plus"
   # "chronos2_ft"
-  "timefm_ft"
+  # "timesfm_ft"
+  "chronos2_zero"
+  "timesfm_zero"
+  # "stgcn"
+  # "stsgcn"
+  # "graph_wavenet"
+  # "dcrnn"
+  # "d2stgnn"
+  # "stgformer"
+  # "aist"
+  # "st_hhol"
   # "stexplainer"
+  # "cast"
 )
 
+
 DATASETS=(
-  "chicago_crime"
-  "seattle_house"
+  # "chicago_crime"
+  # "seattle_house"
+  "redfin_metro_house"
 )
 
 for DATASET in "${DATASETS[@]}"; do
