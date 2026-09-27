@@ -1,6 +1,9 @@
 """Oracle / ensemble upper-bound analysis for efficient per-instance model selection.
 
-Given a set of already-trained model runs (same dataset/window/split), answers:
+Given a set of already-trained model runs (same dataset/window/split),
+compared on the held-out **test set only** by default (``--splits`` widens
+this) — "oracle accuracy" should answer "how much upside is there on unseen
+data", not on data the models were fit on. Answers:
   1. Oracle: if you always used whichever model scored best on each individual
      instance, how much better is that than the best single model overall?
      (the "selection gap" — the upside a per-instance selector, e.g. an
@@ -57,6 +60,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-eval-batches", type=int, default=None, help="cap batches per split per run (debugging)")
     p.add_argument("--ensemble-method", type=str, default="mean", choices=["mean", "median"],
                    help="how to combine models' predictions for the ensemble baseline (default: mean)")
+    p.add_argument("--splits", nargs="+", default=["test"], choices=["train", "val", "test"],
+                   help="which split(s) to compare on (default: test only -- oracle accuracy should "
+                   "answer 'how much upside is there on unseen data')")
     p.add_argument("--out-dir", type=str, required=True,
                    help="output folder — oracle_instance_detail.csv, oracle_summary.csv, "
                    "oracle_win_counts.csv are written here")
@@ -109,6 +115,7 @@ def main() -> None:
         device=device,
         max_batches=args.max_eval_batches,
         ensemble_method=args.ensemble_method,
+        splits=tuple(args.splits),
         verbose=True,
     )
 

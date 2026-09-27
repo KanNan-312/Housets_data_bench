@@ -4,7 +4,10 @@ Given a set of already-trained model runs (same dataset/window/split, per
 :func:`housets_bench.case_library.build_case_library`'s consistency check),
 answers three questions that motivate (or don't) building an efficient
 per-instance model-selection policy — e.g. an LLM that picks which model to
-trust for a given region/window — instead of always using one fixed model:
+trust for a given region/window — instead of always using one fixed model.
+By default this compares on the held-out **test set only** (pass ``splits``
+to widen it) — "oracle accuracy" should answer "how much upside is there on
+unseen data", not on data the models were fit on:
 
 1. **Oracle**: if you always picked the best-scoring model for each
    individual instance (by its own lowest MAE), what accuracy would you get?
@@ -28,7 +31,7 @@ trust for a given region/window — instead of always using one fixed model:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -59,9 +62,16 @@ def build_oracle_report(
     device: Optional[torch.device] = None,
     max_batches: Optional[int] = None,
     ensemble_method: str = "mean",
+    splits: Sequence[str] = ("test",),
     verbose: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Score every run, then compare each model, the oracle, and an ensemble.
+
+    ``splits``: which split(s) to compare on — defaults to the held-out
+    **test set only**, since "oracle accuracy" is meant to answer "how much
+    upside is there on unseen data", not on data the models were fit on.
+    Pass e.g. ``("train", "val", "test")`` to widen it, matching
+    :func:`housets_bench.case_library.build_case_library`'s own default.
 
     Returns ``(instance_df, summary_df, win_counts_df)``:
       - ``instance_df``: one row per instance — the oracle's chosen model and
@@ -83,17 +93,17 @@ def build_oracle_report(
         raise ValueError(f"ensemble_method must be 'mean' or 'median', got {ensemble_method!r}")
 
     _case_library_df, detail_df = build_case_library(
-        run_dirs, device=device, max_batches=max_batches, verbose=verbose
+        run_dirs, device=device, max_batches=max_batches, splits=splits, verbose=verbose
     )
     if detail_df.empty:
-        raise ValueError("no scored instances found across the given runs")
+        raise ValueError(f"no scored instances found across the given runs for splits={tuple(splits)!r}")
 
     models = sorted(detail_df["model"].unique())
     if len(models) < 2:
         raise ValueError(f"oracle/ensemble analysis needs >= 2 models to compare, got {models}")
 
     if verbose:
-        print(f"[oracle] comparing {len(models)} models: {models}")
+        print(f"[oracle] comparing {len(models)} models on splits={tuple(splits)}: {models}")
 
     instance_records: List[Dict[str, Any]] = []
     n_skipped = 0

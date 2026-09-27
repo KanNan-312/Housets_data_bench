@@ -372,7 +372,9 @@ together must share the same dataset, window shape, and split boundaries
 Once you have `case_library`-comparable checkpoints for several models,
 `scripts/build_oracle_report.py` answers the question that actually motivates
 per-instance model selection (e.g. by an LLM): **is there upside to selecting
-at all, and how much?**
+at all, and how much?** Compared on the held-out **test set only** by default
+(`--splits val test` to widen it) — "oracle accuracy" should answer "how much
+upside is there on unseen data", not on data the models were fit on.
 
 ```bash
 python scripts/build_oracle_report.py \
