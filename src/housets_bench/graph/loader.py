@@ -31,11 +31,28 @@ class GeoGraph:
     edge_weight: np.ndarray
 
 
+_NULLISH_PATH_STRINGS = {"", "none", "null", "nul", "~", "nan"}
+
+
 @dataclass(frozen=True)
 class GraphConfig:
     """Dataset-level graph settings (shared by every GNN model on that dataset)."""
 
     path: Optional[str] = None  # path to a graph.npz file (A + ids arrays)
+
+    def __post_init__(self) -> None:
+        # YAML's null is `null`/`~`/empty, not the Python-looking bareword
+        # `None` -- unquoted OR quoted `None` in a dataset YAML parses as the
+        # literal string "None", not a null path. By the time this runs, that
+        # string has typically already been through `resolve_relpaths` (which
+        # joins any non-absolute string onto the repo root), turning it into
+        # e.g. "<repo_root>/None" -- so check the path's *basename*, not the
+        # raw value, to catch it either before or after that join. Without
+        # this, a bogus non-empty path would look "set" and break every model
+        # (including the requires_graph=False ones, which should just skip
+        # graph loading entirely).
+        if isinstance(self.path, str) and Path(self.path).name.strip().lower() in _NULLISH_PATH_STRINGS:
+            object.__setattr__(self, "path", None)
 
 
 def load_graph(path: str | Path, region_ids: Iterable[str]) -> GeoGraph:

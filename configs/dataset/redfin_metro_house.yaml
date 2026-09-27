@@ -17,9 +17,11 @@ data:
 
 graph:
   # path to a graph.npz file with 'A' ([N,N] adjacency matrix) and 'ids'
-  # (length-N array of region ids giving A's row/col order) — required by GNN
-  # models. See scripts/build_knn_graph.py for a standalone builder.
-  path: "None"
+  # (length-N array of region ids giving A's row/col order) — required by
+  # most GNN models (a handful -- staeformer, st_hhol, stid, agcrn, mtgnn --
+  # set requires_graph=False and run fine with no path at all). See
+  # scripts/build_knn_graph.py for a standalone builder.
+  path: null
 
 split:
   train_ratio: 0.7
