@@ -373,8 +373,12 @@ Once you have `case_library`-comparable checkpoints for several models,
 `scripts/build_oracle_report.py` answers the question that actually motivates
 per-instance model selection (e.g. by an LLM): **is there upside to selecting
 at all, and how much?** Compared on the held-out **test set only** by default
-(`--splits val test` to widen it) — "oracle accuracy" should answer "how much
-upside is there on unseen data", not on data the models were fit on.
+(`--splits val test` to widen it), using each run's own configured
+`test_stride` (`--test-stride 1` overrides it, matching what
+`build_case_library.py` forces for its own exhaustive per-instance
+purpose, at the cost of roughly multiplying the instance count by the
+original stride) — "oracle accuracy" should answer "how much upside is
+there on unseen data", not on an artificially densified re-sampling of it.
 
 ```bash
 python scripts/build_oracle_report.py \

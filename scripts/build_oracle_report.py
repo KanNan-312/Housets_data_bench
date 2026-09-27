@@ -2,8 +2,10 @@
 
 Given a set of already-trained model runs (same dataset/window/split),
 compared on the held-out **test set only** by default (``--splits`` widens
-this) — "oracle accuracy" should answer "how much upside is there on unseen
-data", not on data the models were fit on. Answers:
+this), using each run's own configured ``test_stride`` (``--test-stride``
+overrides it) so the instance count matches your actual test set size —
+"oracle accuracy" should answer "how much upside is there on unseen data",
+not on an artificially densified re-sampling of it. Answers:
   1. Oracle: if you always used whichever model scored best on each individual
      instance, how much better is that than the best single model overall?
      (the "selection gap" — the upside a per-instance selector, e.g. an
@@ -63,6 +65,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--splits", nargs="+", default=["test"], choices=["train", "val", "test"],
                    help="which split(s) to compare on (default: test only -- oracle accuracy should "
                    "answer 'how much upside is there on unseen data')")
+    p.add_argument("--test-stride", type=int, default=None,
+                   help="force this test_stride onto every run before scoring (default: None -- use "
+                   "each run's own configured test_stride, so the instance count matches your actual "
+                   "test set size; pass 1 for dense/exhaustive sampling instead)")
     p.add_argument("--out-dir", type=str, required=True,
                    help="output folder — oracle_instance_detail.csv, oracle_summary.csv, "
                    "oracle_win_counts.csv are written here")
@@ -116,6 +122,7 @@ def main() -> None:
         max_batches=args.max_eval_batches,
         ensemble_method=args.ensemble_method,
         splits=tuple(args.splits),
+        test_stride=args.test_stride,
         verbose=True,
     )
 

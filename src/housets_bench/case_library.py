@@ -239,6 +239,7 @@ def build_case_library(
     device: Optional[torch.device] = None,
     max_batches: Optional[int] = None,
     splits: Sequence[str] = ("train", "val", "test"),
+    test_stride: Optional[int] = 1,
     verbose: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Build the per-instance case library across ``run_dirs``.
@@ -246,6 +247,16 @@ def build_case_library(
     ``splits``: which split(s) to score instances from (default: all three,
     for the full case library). Pass ``("test",)`` to restrict to the held-out
     test set only, e.g. for :func:`housets_bench.oracle_selection.build_oracle_report`.
+
+    ``test_stride``: forced onto every run's ``window.test_stride`` before
+    scoring (default ``1`` — dense, every possible test window, for this
+    tool's own "exhaustive per-instance case library" purpose). Pass ``None``
+    to instead respect each run's *own* configured ``test_stride`` (e.g. so
+    the instance count matches what ``metrics.json``'s own aggregate numbers
+    were computed over) — this is what
+    :func:`housets_bench.oracle_selection.build_oracle_report` does by
+    default, so its instance count matches your actual test set size instead
+    of an artificially densified one.
 
     Returns ``(case_library_df, detail_df)``:
       - ``detail_df``: one row per (model, instance) — ``mse``/``mae``/``rmse``
@@ -265,10 +276,10 @@ def build_case_library(
     ref_run_dir: Optional[Path] = None
     ref_cfg: Optional[Dict[str, Any]] = None
 
+    cfg_overrides = {"window": {"test_stride": int(test_stride)}} if test_stride is not None else None
+
     for run_dir in run_dirs:
-        model, bundle, cfg = load_run(
-            run_dir, device=device, cfg_overrides={"window": {"test_stride": 1}}
-        )
+        model, bundle, cfg = load_run(run_dir, device=device, cfg_overrides=cfg_overrides)
         if ref_cfg is None:
             ref_run_dir, ref_cfg = run_dir, cfg
         else:

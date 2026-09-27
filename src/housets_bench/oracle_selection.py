@@ -63,6 +63,7 @@ def build_oracle_report(
     max_batches: Optional[int] = None,
     ensemble_method: str = "mean",
     splits: Sequence[str] = ("test",),
+    test_stride: Optional[int] = None,
     verbose: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Score every run, then compare each model, the oracle, and an ensemble.
@@ -72,6 +73,13 @@ def build_oracle_report(
     upside is there on unseen data", not on data the models were fit on.
     Pass e.g. ``("train", "val", "test")`` to widen it, matching
     :func:`housets_bench.case_library.build_case_library`'s own default.
+
+    ``test_stride``: defaults to ``None`` — i.e. each run's *own* configured
+    ``window.test_stride`` is used, so the instance count here matches your
+    actual test set size (e.g. 147 instances, not an artificially densified
+    441 from forcing stride 1 the way ``build_case_library`` does for its own
+    exhaustive-analysis purpose). Pass ``1`` to force dense sampling instead,
+    matching ``build_case_library``'s default.
 
     Returns ``(instance_df, summary_df, win_counts_df)``:
       - ``instance_df``: one row per instance — the oracle's chosen model and
@@ -93,7 +101,12 @@ def build_oracle_report(
         raise ValueError(f"ensemble_method must be 'mean' or 'median', got {ensemble_method!r}")
 
     _case_library_df, detail_df = build_case_library(
-        run_dirs, device=device, max_batches=max_batches, splits=splits, verbose=verbose
+        run_dirs,
+        device=device,
+        max_batches=max_batches,
+        splits=splits,
+        test_stride=test_stride,
+        verbose=verbose,
     )
     if detail_df.empty:
         raise ValueError(f"no scored instances found across the given runs for splits={tuple(splits)!r}")
