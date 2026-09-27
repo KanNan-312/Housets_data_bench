@@ -206,6 +206,15 @@ class GNNForecasterBase(BaseForecaster):
     max_train_batches: Optional[int] = None
     seed: int = 0
 
+    # Whether this model needs a real adjacency at all. Every GNN model still
+    # goes through GraphWindowDataset (one item = all N nodes x one time
+    # window) regardless of this flag -- that's just the batch shape, not the
+    # graph. Set False on subclasses whose _build_net/_graph_forward never
+    # reference A_norm/A_raw (e.g. STAEformer's pure attention, ST-HHOL's
+    # self-contained learned hypergraph) so they can run on a dataset with no
+    # graph.npz / no dataset.graph.path at all.
+    requires_graph: bool = True
+
     def __init__(self) -> None:
         self._net: Optional[nn.Module] = None
         self._A_norm: Optional[torch.Tensor] = None   # symmetric-normalized sparse adj, CPU
@@ -310,21 +319,25 @@ class GNNForecasterBase(BaseForecaster):
         # Load the precomputed node adjacency graph (dataset-level config).
         raw_aligned = bundle.raw.aligned
         graph_cfg = bundle.raw.graph
-        if not graph_cfg.path:
-            raise ValueError(
-                f"{self.name} requires graph.path to be set in the dataset config, "
-                "pointing at a graph.npz file with 'A' and 'ids' arrays"
-            )
-        geo = load_graph(graph_cfg.path, raw_aligned.zipcodes)
 
         n_nodes = int(bundle.aligned_proc.values.shape[0])
         self._n_nodes = n_nodes
         self._pred_len = int(bundle.raw.spec.pred_len)
 
-        A = sparse_adj(geo.edge_index[0], geo.edge_index[1], n_nodes,
-                       weight=geo.edge_weight, device=dev)
-        self._A_norm = normalize_adj_sym(A).cpu()
-        self._A_raw = A.cpu()
+        if graph_cfg.path:
+            geo = load_graph(graph_cfg.path, raw_aligned.zipcodes)
+            A = sparse_adj(geo.edge_index[0], geo.edge_index[1], n_nodes,
+                           weight=geo.edge_weight, device=dev)
+            self._A_norm = normalize_adj_sym(A).cpu()
+            self._A_raw = A.cpu()
+        elif self.requires_graph:
+            raise ValueError(
+                f"{self.name} requires graph.path to be set in the dataset config, "
+                "pointing at a graph.npz file with 'A' and 'ids' arrays"
+            )
+        # else: requires_graph=False and no graph.path -- self._A_norm/_A_raw
+        # stay None (set in __init__); this model's _build_net/_graph_forward
+        # never reference them.
 
         # Graph-structured dataloaders (one item = all N nodes × one time window)
         graph_dls: Dict[str, DataLoader] = {}

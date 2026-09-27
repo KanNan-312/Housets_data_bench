@@ -95,6 +95,7 @@ class STHHOLForecaster(GNNForecasterBase):
     """Simplified ST-HHOL forecaster: trainable hierarchical hypergraph over crime counts."""
 
     name: str = "st_hhol"
+    requires_graph: bool = False  # self-contained learned hypergraph, no A_norm use
     d_model: int = 32
     n_hyperedges: int = 16
     n_layers: int = 2

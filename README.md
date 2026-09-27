@@ -211,6 +211,27 @@ The current `configs/models/` directory includes the following model configs.
   benchmark's normal offline time split; drops the paper's weather/POI/socioeconomic/311 data
   sources and its online/streaming training loop
 
+**Models that never consult an adjacency at all** (`requires_graph = False` on the
+forecaster class — `dataset.graph.path` doesn't need to be set; no `graph.npz`,
+no coordinates, nothing): `staeformer`, `st_hhol` (above), plus three new additions —
+- `stid` — Spatial-Temporal Identity (GestaltCogTeam/STID, CIKM'22), direct port: pure
+  MLP over each node's flattened lookback window, concatenated with a learned per-node
+  "spatial identity" embedding — no graph convolution or attention of any kind. The
+  paper's own finding is that most of what STGNNs buy you comes from breaking
+  spatial/temporal sample-indistinguishability, not the graph itself; day-of-week/
+  time-of-day ("temporal identity") embeddings are dropped since this benchmark's
+  datasets are monthly
+- `agcrn` — Adaptive Graph Convolutional Recurrent Network (LeiBAI/AGCRN, NeurIPS 2020),
+  direct port of its core mechanism: learns its own adjacency purely from trainable node
+  embeddings (`softmax(relu(E@E.T))`) and gives every node its own graph-conv weights via
+  node-adaptive parameter learning, replacing a GRU's linear gates. The paper's
+  scheduled-sampling decoder is replaced with a direct multi-horizon head (that mechanism
+  is already covered by `dcrnn` in this registry)
+- `mtgnn` — "Connecting the Dots" (nnzhan/MTGNN, KDD 2020), direct port of its core
+  mechanism: learns a **directed**, top-k-sparsified adjacency from two node-embedding
+  matrices, then alternates dilated-inception temporal convolution (parallel kernel
+  sizes 2/3/6/7) with mix-hop graph propagation over the learned graph and its transpose
+
 ### Foundation-model variants
 
 - `chronos2_zero`
@@ -345,6 +366,63 @@ cost, not for this exhaustive per-instance comparison — so this can be
 considerably slower than a normal `run_one.py` evaluation. All runs passed
 together must share the same dataset, window shape, and split boundaries
 (validated up front, with a clear error listing any mismatch).
+
+### Oracle / ensemble upper-bound analysis
+
+Once you have `case_library`-comparable checkpoints for several models,
+`scripts/build_oracle_report.py` answers the question that actually motivates
+per-instance model selection (e.g. by an LLM): **is there upside to selecting
+at all, and how much?**
+
+```bash
+python scripts/build_oracle_report.py \
+  --runs-root runs/dc_house \
+  --models dlinear patchtst gcn_tcn stgformer stid agcrn mtgnn \
+  --ensemble-method mean \
+  --out-dir runs/dc_house/oracle_report
+```
+
+It scores every model on every shared instance (reusing
+`housets_bench.case_library.build_case_library`), then for each instance
+computes:
+
+- **Oracle** — the error of whichever model scored lowest MAE *on that
+  instance*. Averaged over instances, this is a strict upper bound: it always
+  beats the best single model in aggregate by construction (an average of
+  pointwise minimums can't exceed any fixed model's average) — the real
+  question is the **size of the gap**, i.e. how much accuracy a perfect
+  per-instance selector could ever recover over just deploying the single
+  best model.
+- **Ensemble** — simple mean (or `--ensemble-method median`) of every model's
+  raw prediction for that instance. Unlike the oracle, this is *not*
+  guaranteed to beat the best single model — correlated biases across models
+  can make the average worse — so it's measured, not assumed.
+
+Three files land under `--out-dir`:
+
+1. **`oracle_instance_detail.csv`** — one row per instance: the oracle's
+   chosen model + its mse/mae/rmse, the ensemble's mse/mae/rmse, and every
+   individual model's own MAE for that instance (wide format — this is the
+   table to hand an LLM/classifier to learn *when* each model wins, i.e. to
+   build the actual selector once the oracle analysis says selection is
+   worthwhile).
+2. **`oracle_summary.csv`** — one row per method (each model, `oracle`,
+   `ensemble_<method>`): aggregate `mse`/`mae`/`rmse` over the instance set
+   every model scored in common, sorted best-to-worst.
+3. **`oracle_win_counts.csv`** — how often the oracle picks each model
+   (`model, n_wins, win_pct`). A lopsided distribution (one model wins almost
+   everywhere) means selection has little to add; an even spread across
+   several models is the signal that it does.
+
+The console output prints a direct verdict: the best single model's MAE, the
+oracle's MAE and its % improvement over that best single model (the
+selection gap), and whether the ensemble beats the best single model / the
+oracle. Only instances scored by every model are compared — an instance one
+model's own windowing dropped (e.g. a NaN somewhere in its lookback/forecast
+slice for a DL/foundation model — see `explainable_library.py`'s
+`_nan_dropped_window_counts`) is excluded and counted in a printed skip line,
+since a "winner" can't be fairly attributed without every model's score for
+that instance.
 
 `scripts/explain_instance.py` gives an on-demand, model-agnostic breakdown of
 one instance's forecast via **occlusion** (`housets_bench.explain.occlusion_sensitivity`):
