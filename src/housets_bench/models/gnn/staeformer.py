@@ -11,6 +11,9 @@ fully data-agnostic (no external graph needed). Each layer stack applies
 temporal self-attention (over the lookback window, per node) followed by
 spatial self-attention (over all nodes, per timestep) — all temporal layers
 first, then all spatial layers, matching the reference implementation.
+``requires_graph = False`` below: this model runs on a dataset with no
+``graph.npz``/``dataset.graph.path`` at all (still uses ``GraphWindowDataset``
+for its all-nodes-per-window batch shape, just no adjacency).
 
 The reference's ``tod_embedding``/``dow_embedding`` (time-of-day /
 day-of-week, wall-clock-periodicity features) are dropped here since this
@@ -141,6 +144,7 @@ class STAEformerForecaster(GNNForecasterBase):
     """STAEformer forecaster (direct port — pure attention, no graph convolution)."""
 
     name: str = "staeformer"
+    requires_graph: bool = False  # pure attention + learned node/adaptive embeddings, no A_norm use
     input_embedding_dim: int = 24
     spatial_embedding_dim: int = 8
     adaptive_embedding_dim: int = 24

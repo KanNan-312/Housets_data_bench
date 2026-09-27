@@ -44,6 +44,10 @@ MODEL_CATEGORY: Dict[str, str] = {
     "stexplainer": "spatial_temporal",
     "aist": "spatial_temporal",
     "st_hhol": "spatial_temporal",
+    "staeformer": "spatial_temporal",
+    "stid": "spatial_temporal",
+    "agcrn": "spatial_temporal",
+    "mtgnn": "spatial_temporal",
     # DL
     "rnn": "DL",
     "lstm": "DL",

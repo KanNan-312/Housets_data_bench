@@ -44,6 +44,12 @@ from .gnn.st_hhol import STHHOLForecaster  # noqa: F401
 from .gnn.cast import CaSTForecaster  # noqa: F401
 from .gnn.stexplainer import STExplainerForecaster  # noqa: F401
 
+# graph neural network baselines — no external adjacency needed at all
+# (requires_graph = False; run on datasets with no graph.npz/dataset.graph.path)
+from .gnn.stid import STIDForecaster  # noqa: F401
+from .gnn.agcrn import AGCRNForecaster  # noqa: F401
+from .gnn.mtgnn import MTGNNForecaster  # noqa: F401
+
 # optional foundation-model wrappers
 from .foundation.timesfm import TimesFMZeroForecaster, TimesFMCalibratedForecaster, TimesFMFullFineTuneForecaster  
 from .foundation.chronos import ChronosZeroForecaster, ChronosCalibratedForecaster, ChronosFullFineTuneForecaster 
