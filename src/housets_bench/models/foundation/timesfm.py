@@ -161,6 +161,7 @@ def _load_timesfm(
         infer_is_positive=True,
         fix_quantile_crossing=True,
     )
+
     try:
         model.compile(cfg)
     except Exception:

@@ -27,7 +27,33 @@ split:
   test_start_date: "2025-01-31"  # e.g. "2022-01-01" — overrides ratio-based test-set boundary
 
 window:
-  seq_len: 12
+  seq_len: 36
   label_len: 12
   pred_len: 12
   test_stride: 3  # >1 strides through non-overlapping test windows to cut eval cost
+
+transforms:
+  log:
+    enabled: false
+    mode: log1p
+    apply_to:
+      target: true
+      continuous_features: true
+
+  clip:
+    enabled: false
+    method: quantile
+    apply_to:
+      target: false
+      continuous_features: true
+    quantile:
+      lower: 0.001
+      upper: 0.999
+
+  zscore:
+    enabled: false
+    scope: global
+    eps: 1.0e-6
+    apply_to:
+      target: true
+      continuous_features: true

@@ -2,16 +2,16 @@
 # set -euo pipefail
 
 MODELS=(
-  "dlinear"
-  "patchtst"
-  "itransformer"
-  "timemixer"
-  "timellm"
-  "gpt4ts"
+  # "dlinear"
+  # "patchtst"
+  # "itransformer"
+  # "timemixer"
+  # "timellm"
+  # "gpt4ts"
   # "stllm_plus"
   # "chronos2_ft"
   # "timesfm_ft"
-  "chronos2_zero"
+  # "chronos2_zero"
   "timesfm_zero"
   # "stgcn"
   # "stsgcn"
