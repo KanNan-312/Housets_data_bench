@@ -19,7 +19,7 @@ from its own config rather than sharing one; only the dataset/window/split
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -238,9 +238,14 @@ def build_case_library(
     *,
     device: Optional[torch.device] = None,
     max_batches: Optional[int] = None,
+    splits: Sequence[str] = ("train", "val", "test"),
     verbose: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Build the per-instance case library across ``run_dirs``.
+
+    ``splits``: which split(s) to score instances from (default: all three,
+    for the full case library). Pass ``("test",)`` to restrict to the held-out
+    test set only, e.g. for :func:`housets_bench.oracle_selection.build_oracle_report`.
 
     Returns ``(case_library_df, detail_df)``:
       - ``detail_df``: one row per (model, instance) — ``mse``/``mae``/``rmse``
@@ -275,7 +280,7 @@ def build_case_library(
             print(f"[case_library] scoring {model_name} ({category}) from {run_dir} ...")
 
         n_instances = 0
-        for split in ("train", "val", "test"):
+        for split in splits:
             for meta, y_true_raw, y_pred_raw in _iter_instance_forecasts(
                 model, bundle, split, device=device, max_batches=max_batches
             ):
